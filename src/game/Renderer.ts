@@ -84,6 +84,9 @@ export class CanvasRenderer {
     this.renderShockwaves(ctx, particleSystem);
     this.renderParticles(ctx, particleSystem);
 
+    // 8b. Neutral zone watermark on top so flying tiles never cover it
+    this.renderNeutralZoneWatermark(ctx);
+
     // 9. Floating Combat Text
     this.renderFloatingTexts(ctx, particleSystem);
 
@@ -148,11 +151,7 @@ export class CanvasRenderer {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Neutral zone watermark
-    ctx.font = '700 13px "Chakra Petch", monospace';
-    ctx.fillStyle = 'rgba(180, 210, 255, 0.3)';
-    ctx.textAlign = 'center';
-    ctx.fillText('⚡ NEUTRAL CLASH ZONE · BLOCK-TO-BLOCK COLLISION ⚡', this.canvasWidth / 2, y + h / 2 + 5);
+    // (Watermark text is drawn late via renderNeutralZoneWatermark.)
 
     // Column guides across neutral zone
     ctx.strokeStyle = 'rgba(50, 80, 130, 0.1)';
@@ -165,6 +164,16 @@ export class CanvasRenderer {
       ctx.stroke();
     }
 
+    ctx.restore();
+  }
+
+  // Neutral zone watermark, drawn late so projectiles/particles pass under it.
+  private renderNeutralZoneWatermark(ctx: CanvasRenderingContext2D) {
+    ctx.save();
+    ctx.font = '700 13px "Chakra Petch", monospace';
+    ctx.fillStyle = 'rgba(180, 210, 255, 0.3)';
+    ctx.textAlign = 'center';
+    ctx.fillText('⚡ NEUTRAL CLASH ZONE · BLOCK-TO-BLOCK COLLISION ⚡', this.canvasWidth / 2, this.neutralZoneY + this.neutralZoneHeight / 2 + 5);
     ctx.restore();
   }
 

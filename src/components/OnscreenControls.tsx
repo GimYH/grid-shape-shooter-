@@ -30,8 +30,8 @@ export const OnscreenControls: React.FC<OnscreenControlsProps> = ({ engine }) =>
 
   return (
     <div className="absolute inset-0 pointer-events-none select-none z-20 font-['Chakra_Petch']">
-      {/* On-screen Controls Toggle Button (Top Right corner) */}
-      <div className="absolute top-3 right-4 pointer-events-auto">
+      {/* On-screen Controls Toggle Button (bottom center, clear of HUD panels) */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-auto">
         <button
           onClick={() => setShowControls((prev) => !prev)}
           title={showControls ? '가상 터치 버튼 숨기기' : '가상 터치 버튼 켜기'}
@@ -115,7 +115,7 @@ export const OnscreenControls: React.FC<OnscreenControlsProps> = ({ engine }) =>
               className={`w-14 h-14 rounded-full flex flex-col items-center justify-center border transition-all active:scale-95 cursor-pointer ${
                 dashReady
                   ? 'bg-emerald-500/25 border-emerald-400 text-emerald-300 shadow-lg shadow-emerald-950/60'
-                  : 'bg-slate-900/60 border-slate-700 text-slate-500'
+                  : 'bg-slate-900/60 border-slate-700 text-slate-400'
               }`}
             >
               <Wind className="w-5 h-5" />

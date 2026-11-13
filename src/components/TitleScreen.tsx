@@ -109,7 +109,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
         </div>
 
         <p className="text-slate-300 text-xs sm:text-sm max-w-lg leading-relaxed mb-6">
-          3칸 이상 연결된 발판을 밟고 거대 형상 투사체를 사출하세요. 대시(Shift)로 적의 탄환을 회피하고, 패가 꼬였을 땐 디스카드(L)로 0.7초 만에 바닥을 리로드하여 승리하세요!
+          3칸 이상 연결된 발판을 밟고 거대 형상 투사체를 사출하세요. 대시(Shift)로 적의 탄환을 회피하고, 패가 꼬였을 땐 디스카드(X/E)로 0.7초 만에 바닥을 리로드하여 승리하세요!
         </p>
 
         {/* 4 Core Game Modes Grid (Local 2P restored) */}
@@ -167,16 +167,16 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
         </button>
 
         {/* User requested Key guide line */}
-        <div className="text-xs font-mono text-slate-300 crack-bg bg-slate-900/70 border border-slate-800 px-4 py-2 rounded-full tracking-wider flex items-center gap-3">
-          <span><strong className="text-cyan-400">[방향키/WASD]</strong> 이동</span>
+        <div className="text-xs font-mono text-slate-300 crack-bg bg-slate-900/70 border border-slate-800 px-4 py-2 rounded-full tracking-wider flex flex-wrap items-center justify-center gap-3 gap-y-1 break-keep">
+          <span className="whitespace-nowrap"><strong className="text-cyan-400">[방향키/WASD]</strong> 이동</span>
           <span>•</span>
-          <span><strong className="text-cyan-300">[Space]</strong> 공격(발사)</span>
+          <span className="whitespace-nowrap"><strong className="text-cyan-300">[Space]</strong> 공격(발사)</span>
           <span>•</span>
-          <span><strong className="text-emerald-400">[Shift]</strong> 대시(회피)</span>
+          <span className="whitespace-nowrap"><strong className="text-emerald-400">[Shift]</strong> 대시(회피)</span>
           <span>•</span>
-          <span><strong className="text-amber-400">[Ctrl]</strong> 스킬</span>
+          <span className="whitespace-nowrap"><strong className="text-amber-400">[Ctrl]</strong> 스킬</span>
           <span>•</span>
-          <span><strong className="text-purple-400">[X/E]</strong> 타일 버리기(0.7s)</span>
+          <span className="whitespace-nowrap"><strong className="text-purple-400">[X/E]</strong> 타일 버리기(0.7s)</span>
         </div>
       </div>
     </div>

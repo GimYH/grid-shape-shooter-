@@ -262,10 +262,13 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
                             : 'bg-slate-950/60 hover:bg-slate-800/60 border-slate-800 text-slate-300'
                         }`}
                       >
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-xs font-bold">{arch.nameKo}</span>
+                        <div className="flex items-start justify-between gap-1 mb-1">
+                          <div className="min-w-0">
+                            <span className="text-xs font-bold block truncate">{arch.nameKo}</span>
+                            <span className="text-[9px] text-slate-400 block uppercase tracking-wider">{arch.name}</span>
+                          </div>
                           <span
-                            className="text-[9px] px-1 rounded uppercase font-bold"
+                            className="text-[9px] px-1 rounded uppercase font-bold shrink-0"
                             style={{ backgroundColor: `${arch.color}30`, color: arch.color }}
                           >
                             {arch.badge}
@@ -284,7 +287,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
                   <h3 className="text-sm font-bold text-white mb-1">
                     새 1:1 대전 방을 생성합니다
                   </h3>
-                  <p className="text-xs text-slate-400 mb-4 max-w-md mx-auto">
+                  <p className="text-xs text-slate-300 mb-4 max-w-md mx-auto break-keep text-pretty">
                     방 생성 후 생성된 <strong>초대 링크</strong>를 복사하여 친구에게 메신저나 채팅으로 전달하면 즉시 입장할 수 있습니다.
                   </p>
                   <button
@@ -302,7 +305,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
                   <h3 className="text-sm font-bold text-white mb-1">
                     초대 코드를 입력하세요
                   </h3>
-                  <p className="text-xs text-slate-400 mb-4">
+                  <p className="text-xs text-slate-300 mb-4 break-keep text-pretty">
                     친구가 공유해준 6자리 방 코드를 입력하거나 초대 링크를 브라우저 주소창에 붙여넣으세요.
                   </p>
                   <div className="flex gap-2 max-w-sm mx-auto mb-4">
@@ -388,7 +391,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
 
                   <div className="text-[11px] text-slate-400 space-y-1">
                     <div>
-                      <span className="text-cyan-400 font-bold">스킬:</span> {ARCHETYPES[myArchetype].skillName}
+                      <span className="text-cyan-400 font-bold">스킬:</span>{' '}{ARCHETYPES[myArchetype].skillName}
                     </div>
                   </div>
                 </div>

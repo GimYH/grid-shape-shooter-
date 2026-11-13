@@ -93,7 +93,7 @@ export const CharacterSelectModal: React.FC<CharacterSelectModalProps> = ({
                     if (activeTab === 'p1') setSelectedP1(arch.id);
                     else setSelectedP2(arch.id);
                   }}
-                  className={`p-3 rounded-2xl border text-left transition-all relative overflow-hidden flex flex-col justify-between ${
+                  className={`p-3 rounded-2xl border text-left transition-all relative overflow-hidden flex flex-col justify-between sm:last:col-span-2 ${
                     isSelected
                       ? 'bg-slate-950 border-cyan-400 shadow-md shadow-cyan-500/30 scale-[1.02]'
                       : 'bg-slate-950/60 hover:bg-slate-800/60 border-slate-800'
@@ -159,7 +159,7 @@ export const CharacterSelectModal: React.FC<CharacterSelectModalProps> = ({
                   <Shield className="w-3.5 h-3.5" />
                   PASSIVE TRAIT
                 </span>
-                <p className="text-xs text-slate-200 leading-relaxed">
+                <p className="text-xs text-slate-200 leading-relaxed break-keep text-pretty">
                   {currentConfig.passiveDesc}
                 </p>
               </div>
@@ -176,13 +176,13 @@ export const CharacterSelectModal: React.FC<CharacterSelectModalProps> = ({
                   </span>
                 </div>
                 <h4 className="text-xs font-bold text-white mb-1">{currentConfig.skillName}</h4>
-                <p className="text-xs text-slate-300 leading-relaxed">
+                <p className="text-xs text-slate-300 leading-relaxed break-keep text-pretty">
                   {currentConfig.skillDesc}
                 </p>
               </div>
 
               {/* Discard Tip */}
-              <div className="text-[11px] text-slate-400 bg-cyan-950/30 border border-cyan-800/40 rounded-2xl p-2.5">
+              <div className="text-[11px] text-slate-400 bg-cyan-950/30 border border-cyan-800/40 rounded-2xl p-2.5 break-keep text-pretty">
                 <span className="font-bold text-cyan-300">💡 DISCARD 전술: </span>
                 패가 꼬였을 때 <kbd className="px-1 py-0.5 bg-slate-800 text-white rounded font-mono">[X]</kbd> 또는 <kbd className="px-1 py-0.5 bg-slate-800 text-white rounded font-mono">[E]</kbd> 키를 누르면 0.7초 만에 발밑 타일을 빠르게 버리고 새 타일을 뽑을 수 있습니다.
               </div>

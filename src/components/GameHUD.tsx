@@ -249,7 +249,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           {/* Active Class Info */}
           <div className="pt-2 border-t border-slate-800/80">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-slate-400 font-semibold uppercase">CLASS ARCHETYPE</span>
+              <span className="text-[10px] text-slate-300 font-semibold uppercase">CLASS ARCHETYPE</span>
               <span
                 className="text-[10px] font-bold px-1.5 py-0.5 rounded tracking-wider uppercase"
                 style={{ backgroundColor: `${currentArchetype.color}25`, color: currentArchetype.color }}
@@ -257,8 +257,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 {currentArchetype.nameKo} · {currentArchetype.name}
               </span>
             </div>
-            <p className="text-[10px] text-slate-300 mt-1 leading-snug">
-              <span className="text-cyan-400 font-bold">PASSIVE: </span>
+            <p className="text-[10px] text-slate-300 mt-1 leading-snug break-keep">
+              <span className="text-cyan-400 font-bold">PASSIVE:</span>{' '}
               {currentArchetype.passiveDesc}
             </p>
           </div>
@@ -268,10 +268,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             <div className="flex justify-between items-center text-xs mb-1">
               <span className="font-bold flex items-center gap-1.5 text-slate-200 text-[11px]">
                 <Zap className="w-3.5 h-3.5 text-amber-400" />
-                <span>[Ctrl] {currentArchetype.skillName}</span>
+                <span className="break-keep">[Ctrl] {currentArchetype.skillName}</span>
               </span>
               <span
-                className={`font-bold font-mono text-[10px] px-1.5 py-0.5 rounded ${
+                className={`font-bold font-mono text-[10px] px-1.5 py-0.5 rounded shrink-0 ml-2 ${
                   skillReady ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/40 animate-pulse' : 'text-amber-400'
                 }`}
               >
@@ -297,7 +297,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 <span>[Shift] DASH (회피)</span>
               </span>
               <span
-                className={`font-bold font-mono text-[10px] px-1.5 py-0.5 rounded ${
+                className={`font-bold font-mono text-[10px] px-1.5 py-0.5 rounded shrink-0 ml-2 ${
                   player.dashCooldownRemaining <= 0
                     ? 'bg-cyan-950 text-cyan-400 border border-cyan-500/40 animate-pulse'
                     : 'text-slate-400'
@@ -342,7 +342,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
 
         {/* Bottom Left: Controls Guide - Compact & Sleek */}
-        <div className="crack-bg bg-slate-950/85 border border-slate-800 rounded-3xl p-2.5 text-[10px] text-slate-400 backdrop-blur-md mb-2">
+        <div className="crack-bg bg-slate-950/85 border border-slate-800 rounded-3xl p-2.5 text-[10px] text-slate-300 backdrop-blur-md mb-2 break-keep">
           <div className="font-bold text-[11px] text-slate-300 mb-1 flex items-center gap-1.5">
             <Layers className="w-3 h-3 text-cyan-400" />
             조작 가이드
@@ -441,7 +441,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           {isMulti && player2 ? (
             <div className="pt-2 border-t border-slate-800/80 text-[10px] text-slate-300">
               <div className="flex justify-between items-center">
-                <span className="text-slate-400 font-semibold uppercase">OPPONENT CLASS:</span>
+                <span className="text-slate-300 font-semibold uppercase">OPPONENT CLASS:</span>
                 <span
                   className="font-bold px-1.5 py-0.5 rounded uppercase"
                   style={{ backgroundColor: `${p2Archetype?.color}25`, color: p2Archetype?.color || '#FF3366' }}
@@ -449,7 +449,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                   {p2Archetype?.nameKo || '상대'} ({p2Archetype?.name})
                 </span>
               </div>
-              <p className="text-[10px] text-slate-400 mt-1">
+              <p className="text-[10px] text-slate-300 mt-1 break-keep">
                 {p2Archetype?.passiveDesc}
               </p>
             </div>
@@ -519,7 +519,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         {/* Bottom: 7 Character Archetype Quick Switcher (In Single / Boss Mode) */}
         {!isMulti && (
           <div className="crack-bg bg-slate-950/85 border border-slate-800 rounded-3xl p-2.5 backdrop-blur-md">
-            <div className="text-[11px] font-bold text-slate-400 mb-2 flex items-center justify-between">
+            <div className="text-[11px] font-bold text-slate-300 mb-2 flex items-center justify-between">
               <span>SWITCH ARCHETYPE [1~7]</span>
               <span className="text-[10px] text-cyan-400">7 Classes</span>
             </div>
