@@ -3,8 +3,7 @@ import { ARCHETYPE_LIST } from '../game/archetypes';
 import { ArchetypeId, GameMode } from '../types/game';
 import { STAGES } from '../game/stages';
 import { Swords, Shield, Zap, Crosshair, Play, Sparkles, Check, ArrowRight } from 'lucide-react';
-import lancerPortrait from '../assets/images/cyber_operator_lancer_1794503890682.jpg';
-import sniperPortrait from '../assets/images/cyber_operator_sniper_1794503906250.jpg';
+import { ARCHETYPE_PORTRAITS } from '../assets/portraits';
 
 interface CharacterSelectModalProps {
   isOpen: boolean;
@@ -141,7 +140,7 @@ export const CharacterSelectModal: React.FC<CharacterSelectModalProps> = ({
             <div>
               <div className="flex items-center gap-3 mb-4">
                 <img
-                  src={currentConfig.id === 'sniper' ? sniperPortrait : lancerPortrait}
+                  src={ARCHETYPE_PORTRAITS[currentConfig.id]}
                   alt={currentConfig.nameKo}
                   className="w-14 h-14 rounded-2xl object-cover border-2 shadow-lg"
                   style={{ borderColor: currentConfig.color }}

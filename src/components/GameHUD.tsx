@@ -4,8 +4,8 @@ import { ARCHETYPE_LIST, ARCHETYPES } from '../game/archetypes';
 import { ArchetypeId } from '../types/game';
 import { STAGES } from '../game/stages';
 import { soundManager } from '../audio/soundManager';
-import lancerPortrait from '../assets/images/cyber_operator_lancer_1794503890682.jpg';
-import sniperPortrait from '../assets/images/cyber_operator_sniper_1794503906250.jpg';
+import { ARCHETYPE_PORTRAITS } from '../assets/portraits';
+import { networkManager } from '../game/NetworkManager';
 import {
   Shield,
   Zap,
@@ -49,6 +49,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   const stageInfo = STAGES[Math.min(engine.currentStage - 1, STAGES.length - 1)];
 
   const currentArchetype = ARCHETYPES[player.archetypeId];
+  // Opponent face: P2's archetype in local versus, the remote player's
+  // archetype online, sniper art as the generic face for the stage AI/boss.
+  const opponentArchetypeId =
+    isMulti && player2 ? player2.archetypeId : engine.isOnline ? networkManager.opponentArchetype : null;
+  const opponentPortrait = opponentArchetypeId ? ARCHETYPE_PORTRAITS[opponentArchetypeId] : ARCHETYPE_PORTRAITS.sniper;
   const p2Archetype = player2 ? ARCHETYPES[player2.archetypeId] : null;
 
   const [muted, setMuted] = React.useState(soundManager.isMuted());
@@ -207,7 +212,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         <div className="crack-bg bg-slate-950/90 border border-cyan-500/50 rounded-3xl p-3 shadow-xl shadow-cyan-950/50 backdrop-blur-md">
           <div className="flex items-center gap-2.5 mb-2">
             <img
-              src={lancerPortrait}
+              src={ARCHETYPE_PORTRAITS[player.archetypeId]}
               alt="Operator Portrait"
               className="w-10 h-10 rounded-2xl object-cover border border-cyan-400/60 shadow-md shadow-cyan-950/60"
             />
@@ -379,7 +384,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         >
           <div className="flex items-center gap-2.5 mb-2">
             <img
-              src={sniperPortrait}
+              src={opponentPortrait}
               alt="Opponent Portrait"
               className="w-10 h-10 rounded-2xl object-cover border border-rose-500/60 shadow-md shadow-rose-950/60"
             />
