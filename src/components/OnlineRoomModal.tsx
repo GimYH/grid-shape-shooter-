@@ -180,11 +180,11 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 font-['Chakra_Petch'] select-none">
-      <div className="bg-slate-900 border border-cyan-500/50 rounded-2xl max-w-3xl w-full max-h-[92vh] flex flex-col shadow-2xl shadow-cyan-950/80 overflow-hidden">
+      <div className="crack-bg bg-slate-900 border border-cyan-500/50 rounded-[28px] max-w-3xl w-full max-h-[92vh] flex flex-col shadow-2xl shadow-cyan-950/80 overflow-hidden">
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-800 bg-slate-950/70 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/40">
+            <div className="p-2 rounded-2xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/40">
               <Globe className="w-5 h-5 animate-pulse" />
             </div>
             <div>
@@ -211,7 +211,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
         {/* Content Body */}
         <div className="p-6 flex-1 overflow-y-auto">
           {errorMessage && (
-            <div className="mb-4 p-3 rounded-xl bg-rose-950/60 border border-rose-500/60 text-xs text-rose-300 font-semibold flex items-center justify-between">
+            <div className="mb-4 p-3 rounded-2xl bg-rose-950/60 border border-rose-500/60 text-xs text-rose-300 font-semibold flex items-center justify-between">
               <span>{errorMessage}</span>
               <button onClick={() => setErrorMessage(null)} className="text-rose-400 hover:text-white">✕</button>
             </div>
@@ -221,7 +221,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
             /* Mode 1: Create or Join Lobby View */
             <div className="space-y-6">
               {/* Tab Selector */}
-              <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800 max-w-sm mx-auto">
+              <div className="flex bg-slate-950 p-1 rounded-full border border-slate-800 max-w-sm mx-auto">
                 <button
                   onClick={() => setTab('create')}
                   className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
@@ -256,7 +256,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
                       <button
                         key={arch.id}
                         onClick={() => handleSelectArchetype(arch.id)}
-                        className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                        className={`p-2.5 rounded-2xl border text-left transition-all cursor-pointer ${
                           isSel
                             ? 'bg-cyan-950/80 border-cyan-400 shadow-sm shadow-cyan-500/40 text-white'
                             : 'bg-slate-950/60 hover:bg-slate-800/60 border-slate-800 text-slate-300'
@@ -280,7 +280,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
 
               {tab === 'create' ? (
                 /* Create Room Card */
-                <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-5 text-center">
+                <div className="crack-bg bg-slate-950/70 border border-slate-800 rounded-2xl p-5 text-center">
                   <h3 className="text-sm font-bold text-white mb-1">
                     새 1:1 대전 방을 생성합니다
                   </h3>
@@ -290,7 +290,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
                   <button
                     onClick={handleCreateRoom}
                     disabled={isConnecting}
-                    className="px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-400 hover:from-cyan-400 hover:to-emerald-300 text-slate-950 font-bold text-xs tracking-wider uppercase inline-flex items-center gap-2 shadow-lg shadow-cyan-500/30 transition-all hover:scale-102 active:scale-98 cursor-pointer disabled:opacity-50"
+                    className="px-6 py-3 rounded-full crack-overlay bg-gradient-to-r from-cyan-500 to-emerald-400 hover:from-cyan-400 hover:to-emerald-300 text-slate-950 font-bold text-xs tracking-wider uppercase inline-flex items-center gap-2 shadow-lg shadow-cyan-500/30 transition-all hover:scale-102 active:scale-98 cursor-pointer disabled:opacity-50"
                   >
                     {isConnecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
                     <span>방 생성 및 초대 링크 발급</span>
@@ -298,7 +298,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
                 </div>
               ) : (
                 /* Join Room Card */
-                <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-5 text-center">
+                <div className="crack-bg bg-slate-950/70 border border-slate-800 rounded-2xl p-5 text-center">
                   <h3 className="text-sm font-bold text-white mb-1">
                     초대 코드를 입력하세요
                   </h3>
@@ -312,12 +312,12 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
                       onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())}
                       placeholder="예: 7A9B2X"
                       maxLength={8}
-                      className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-center text-sm font-mono font-bold tracking-widest text-cyan-300 uppercase focus:outline-none focus:border-cyan-400"
+                      className="flex-1 bg-slate-900 border border-slate-700 rounded-full px-4 py-2 text-center text-sm font-mono font-bold tracking-widest text-cyan-300 uppercase focus:outline-none focus:border-cyan-400"
                     />
                     <button
                       onClick={handleJoinRoom}
                       disabled={isConnecting}
-                      className="px-5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs uppercase tracking-wider transition-all cursor-pointer disabled:opacity-50"
+                      className="px-5 py-2 rounded-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs uppercase tracking-wider transition-all cursor-pointer disabled:opacity-50"
                     >
                       {isConnecting ? <Loader2 className="w-4 h-4 animate-spin" /> : '참가하기'}
                     </button>
@@ -329,7 +329,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
             /* Mode 2: Room Matchmaking & Ready View */
             <div className="space-y-6">
               {/* Room Code & Invite Link Bar */}
-              <div className="bg-slate-950 border border-cyan-500/40 rounded-xl p-4">
+              <div className="crack-bg bg-slate-950 border border-cyan-500/40 rounded-2xl p-4">
                 <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
                   <div>
                     <span className="text-[10px] text-slate-400 uppercase tracking-widest block font-bold">
@@ -344,7 +344,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
                   <div className="flex items-center gap-2 w-full sm:w-auto">
                     <button
                       onClick={handleCopyLink}
-                      className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500/25 to-emerald-500/25 hover:from-cyan-500/35 hover:to-emerald-500/35 text-cyan-300 border border-cyan-400/60 text-xs font-bold tracking-wide transition-all hover:scale-102 active:scale-98 cursor-pointer shadow-md shadow-cyan-950/60"
+                      className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-full crack-overlay bg-gradient-to-r from-cyan-500/25 to-emerald-500/25 hover:from-cyan-500/35 hover:to-emerald-500/35 text-cyan-300 border border-cyan-400/60 text-xs font-bold tracking-wide transition-all hover:scale-102 active:scale-98 cursor-pointer shadow-md shadow-cyan-950/60"
                     >
                       {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                       <span>{copied ? '초대 링크 복사됨!' : '🔗 1:1 초대 링크 복사'}</span>
@@ -352,7 +352,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
 
                     <button
                       onClick={handleExitRoom}
-                      className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs transition-colors cursor-pointer"
+                      className="px-3 py-2 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs transition-colors cursor-pointer"
                     >
                       방 나가기
                     </button>
@@ -367,7 +367,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
               {/* Matchup Duel Cards (P1 vs P2) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* Me */}
-                <div className="bg-slate-950/80 border border-cyan-500/50 rounded-xl p-4 relative overflow-hidden">
+                <div className="crack-bg bg-slate-950/80 border border-cyan-500/50 rounded-2xl p-4 relative overflow-hidden">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider">
                       {role === 'p1' ? 'PLAYER 1 (HOST - YOU)' : 'PLAYER 2 (GUEST - YOU)'}
@@ -395,7 +395,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
 
                 {/* Opponent */}
                 <div
-                  className={`border rounded-xl p-4 relative overflow-hidden transition-all ${
+                  className={`border rounded-2xl p-4 relative overflow-hidden transition-all ${
                     opponentConnected
                       ? 'bg-slate-950/80 border-rose-500/50'
                       : 'bg-slate-950/40 border-slate-800 border-dashed flex flex-col items-center justify-center text-center'
@@ -447,7 +447,7 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
                 <button
                   onClick={handleToggleReady}
                   disabled={!opponentConnected}
-                  className={`px-8 py-3.5 rounded-xl font-bold text-sm tracking-wider uppercase transition-all shadow-xl cursor-pointer ${
+                  className={`px-8 py-3.5 rounded-full crack-overlay font-bold text-sm tracking-wider uppercase transition-all shadow-xl cursor-pointer ${
                     !opponentConnected
                       ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
                       : isReady

@@ -1,1 +1,57 @@
 @import "tailwindcss";
+
+/* Grid Shape Shooter — round + shattering design pass.
+   - Round: panels/cards/buttons use large radii (rounded-3xl / rounded-full
+     in components). Canvas tiles use radius 14, projectiles 10.
+   - Shattering: hairline crack texture (.crack-bg) layered over dark
+     panels, floating shard decorations (.shard-float), and triangle shard
+     particles in the canvas renderer. */
+
+/* Hairline fracture texture: two impact points with radiating cracks and
+   faint shard facets. Baked at very low opacity so it reads as texture,
+   not noise. Layer over a dark background-color; the image paints above
+   the color, so it composes with Tailwind bg-* classes. */
+.crack-bg {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%23ffffff' stroke-width='1.2' stroke-opacity='0.09' stroke-linecap='round'%3E%3Cpath d='M60 60 22 18M60 60 112 28M60 60 28 112M60 60 96 104M60 60 132 88M150 150 192 118M150 150 118 192M150 150 184 186M112 28 150 44M28 112 66 150M96 104 150 150'/%3E%3Ccircle cx='60' cy='60' r='3'/%3E%3Ccircle cx='150' cy='150' r='3'/%3E%3C/g%3E%3Cg fill='%23ffffff' fill-opacity='0.035'%3E%3Cpath d='M22 18 60 60 112 28 70 10Z'/%3E%3Cpath d='M150 150 192 118 210 150 184 186Z'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 240px 240px;
+}
+
+/* Crack texture OVERLAY for gradient surfaces: background-image would
+   replace a Tailwind gradient, so this paints the texture in ::after
+   instead. The host keeps its own radius via border-radius: inherit. */
+.crack-overlay {
+  position: relative;
+}
+.crack-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%23ffffff' stroke-width='1.4' stroke-opacity='0.16' stroke-linecap='round'%3E%3Cpath d='M60 60 22 18M60 60 112 28M60 60 28 112M60 60 96 104M60 60 132 88M150 150 192 118M150 150 118 192M150 150 184 186M112 28 150 44M28 112 66 150M96 104 150 150'/%3E%3Ccircle cx='60' cy='60' r='3'/%3E%3Ccircle cx='150' cy='150' r='3'/%3E%3C/g%3E%3Cg fill='%23ffffff' fill-opacity='0.06'%3E%3Cpath d='M22 18 60 60 112 28 70 10Z'/%3E%3Cpath d='M150 150 192 118 210 150 184 186Z'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 240px 240px;
+}
+
+/* Floating shard decorations (title screen, modal corners). */
+@keyframes shard-float {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-9px) rotate(4deg); }
+}
+@keyframes shard-float-rev {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(8px) rotate(-5deg); }
+}
+.shard-float {
+  animation: shard-float 6s ease-in-out infinite;
+}
+.shard-float-rev {
+  animation: shard-float-rev 7.5s ease-in-out infinite;
+}
+
+/* Gentle squash on press for pill buttons that don't already define it. */
+.press-soft {
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+.press-soft:active {
+  transform: scale(0.96);
+}

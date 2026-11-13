@@ -182,10 +182,11 @@ export class CanvasRenderer {
 
     ctx.save();
 
-    // Board container border
+    // Board container border (rounded bubble frame)
     ctx.strokeStyle = owner === 'player' ? 'rgba(0, 255, 170, 0.35)' : 'rgba(255, 51, 102, 0.35)';
     ctx.lineWidth = 2;
-    ctx.strokeRect(originX - 10, originY - 10, totalW + 20, totalH + 20);
+    this.drawRoundedRect(ctx, originX - 10, originY - 10, totalW + 20, totalH + 20, 18);
+    ctx.stroke();
 
     // Board title tag
     ctx.font = '700 12px "Chakra Petch", monospace';
@@ -243,9 +244,12 @@ export class CanvasRenderer {
     pulsePhase: number,
     shapeType?: string
   ) {
-    const radius = 8;
+    // Round bubble tiles. Radius is clamped so small cells stay pill-like
+    // instead of collapsing into circles.
+    const radius = Math.min(14, w / 2 - 2, h / 2 - 2);
 
-    // Cooldown tile state
+    // Cooldown tile state: dark rubble with a few settled shard fragments
+    // (deterministic per tile so they don't shimmer between frames).
     if (!color) {
       ctx.fillStyle = 'rgba(20, 25, 38, 0.8)';
       ctx.strokeStyle = 'rgba(50, 60, 80, 0.4)';
@@ -253,6 +257,21 @@ export class CanvasRenderer {
       this.drawRoundedRect(ctx, x, y, w, h, radius);
       ctx.fill();
       ctx.stroke();
+
+      const seed = this.hash2(x, y);
+      ctx.fillStyle = 'rgba(130, 150, 180, 0.28)';
+      for (let i = 0; i < 3; i++) {
+        const sx = x + w * (0.22 + 0.3 * this.hash2(seed, i * 7 + 1));
+        const sy = y + h * (0.25 + 0.5 * this.hash2(seed, i * 13 + 2));
+        const s = 3 + this.hash2(seed, i * 5 + 3) * 4;
+        const a = this.hash2(seed, i * 11 + 4) * Math.PI;
+        ctx.beginPath();
+        ctx.moveTo(sx + Math.cos(a) * s, sy + Math.sin(a) * s);
+        ctx.lineTo(sx + Math.cos(a + 2.1) * s, sy + Math.sin(a + 2.1) * s);
+        ctx.lineTo(sx + Math.cos(a + 4.2) * s, sy + Math.sin(a + 4.2) * s);
+        ctx.closePath();
+        ctx.fill();
+      }
 
       // Circular reload progress
       const progress = Math.max(0, Math.min(1, 1 - cooldownRemaining / 2.0));
@@ -296,6 +315,43 @@ export class CanvasRenderer {
     ctx.fill();
     ctx.stroke();
 
+    // Hairline cracks: two deterministic fractures per tile, clipped to the
+    // rounded shape so they never spill past the edge. Subtle on idle
+    // tiles, a touch stronger on primed pads.
+    ctx.save();
+    this.drawRoundedRect(ctx, x, y, w, h, radius);
+    ctx.clip();
+    const crackSeed = this.hash2(x, y);
+    const ccx = x + w / 2;
+    const ccy = y + h / 2;
+    ctx.strokeStyle = `rgba(0, 0, 0, ${isActivePad ? 0.28 : 0.18})`;
+    ctx.lineWidth = 1;
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 2; i++) {
+      const a0 = this.hash2(crackSeed, i * 17 + 1) * Math.PI * 2;
+      const a1 = a0 + (this.hash2(crackSeed, i * 29 + 2) - 0.5) * 1.2;
+      const r0 = Math.min(w, h) * 0.18;
+      const r1 = Math.min(w, h) * 0.52;
+      const mx = ccx + Math.cos(a0) * r0;
+      const my = ccy + Math.sin(a0) * r0;
+      const ex = ccx + Math.cos(a1) * r1;
+      const ey = ccy + Math.sin(a1) * r1;
+      ctx.beginPath();
+      ctx.moveTo(ccx, ccy);
+      ctx.lineTo(mx, my);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+    }
+    // One white glint facet next to the cracks.
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.07)';
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.18, y + h * 0.22);
+    ctx.lineTo(x + w * 0.42, y + h * 0.18);
+    ctx.lineTo(x + w * 0.3, y + h * 0.42);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
     // Inner neon highlight for active pads
     if (isActivePad) {
       ctx.strokeStyle = `rgba(255, 255, 255, ${0.4 * pulse})`;
@@ -318,9 +374,11 @@ export class CanvasRenderer {
     }
 
     // Crosshair target overlay if character is standing on this tile
+    // (soft rounded corner brackets).
     if (isHovered) {
       ctx.strokeStyle = '#FFFFFF';
       ctx.lineWidth = 2.5;
+      ctx.lineCap = 'round';
       const cornerSize = 10;
       // Top-left
       ctx.beginPath();
@@ -361,7 +419,9 @@ export class CanvasRenderer {
 
       const hex = COLOR_HEX[cluster.color];
       ctx.strokeStyle = `${hex}CC`;
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 3.5;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
 
       // Draw bridge lines between adjacent tiles in the same cluster
       for (const t of cluster.tiles) {
@@ -407,16 +467,26 @@ export class CanvasRenderer {
         ctx.shadowColor = p.glowColor;
         ctx.shadowBlur = 14;
 
-        // Cell body
+        // Cell body (round bubble block)
         ctx.fillStyle = p.glowColor;
-        this.drawRoundedRect(ctx, cellX, cellY, p.cellWidth, p.cellHeight, 6);
+        this.drawRoundedRect(ctx, cellX, cellY, p.cellWidth, p.cellHeight, 10);
         ctx.fill();
 
         // Inner core
         ctx.shadowBlur = 0;
         ctx.fillStyle = '#FFFFFF';
-        this.drawRoundedRect(ctx, cellX + 4, cellY + 4, p.cellWidth - 8, p.cellHeight - 8, 4);
+        this.drawRoundedRect(ctx, cellX + 4, cellY + 4, p.cellWidth - 8, p.cellHeight - 8, 7);
         ctx.fill();
+
+        // Crack seam across the core: the block reads as about to shatter.
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.28)';
+        ctx.lineWidth = 1.2;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(cellX + p.cellWidth * 0.2, cellY + p.cellHeight * 0.25);
+        ctx.lineTo(cellX + p.cellWidth * 0.5, cellY + p.cellHeight * 0.5);
+        ctx.lineTo(cellX + p.cellWidth * 0.78, cellY + p.cellHeight * 0.72);
+        ctx.stroke();
 
         // If HP > 1, show durability count
         if (cell.hp > 1) {
@@ -432,6 +502,7 @@ export class CanvasRenderer {
         // Spear velocity trail
         ctx.strokeStyle = p.glowColor;
         ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
         const tipY = p.owner === 'player' ? p.y : p.y + p.cellHeight;
         ctx.beginPath();
         ctx.moveTo(p.x + p.cellWidth / 2, tipY);
@@ -648,8 +719,19 @@ export class CanvasRenderer {
       ctx.shadowColor = p.color;
       ctx.shadowBlur = 8;
 
-      if (p.shape === 'square') {
-        ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+      if (p.shape === 'shard') {
+        // Tumbling triangle fragment.
+        const a = p.angle ?? 0;
+        const s = p.size * 0.62;
+        ctx.beginPath();
+        ctx.moveTo(p.x + Math.cos(a) * s, p.y + Math.sin(a) * s);
+        ctx.lineTo(p.x + Math.cos(a + 2.1) * s, p.y + Math.sin(a + 2.1) * s);
+        ctx.lineTo(p.x + Math.cos(a + 4.2) * s, p.y + Math.sin(a + 4.2) * s);
+        ctx.closePath();
+        ctx.fill();
+      } else if (p.shape === 'square') {
+        this.drawRoundedRect(ctx, p.x - p.size / 2, p.y - p.size / 2, p.size, p.size, Math.max(2, p.size * 0.28));
+        ctx.fill();
       } else {
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.size / 2, 0, Math.PI * 2);
@@ -671,6 +753,13 @@ export class CanvasRenderer {
       ctx.fillText(ft.text, ft.x, ft.y);
       ctx.restore();
     }
+  }
+
+  // Deterministic 0..1 hash for per-tile decoration (cracks, rubble) so
+  // the texture is stable across frames instead of flickering.
+  private hash2(a: number, b: number): number {
+    const v = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+    return v - Math.floor(v);
   }
 
   private drawRoundedRect(

@@ -204,12 +204,12 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       {/* LEFT HUD (Player 1 Panel - 320px width) */}
       <div className="w-[310px] flex flex-col justify-between pointer-events-auto select-none">
         {/* Top: Player 1 HP & Vitals */}
-        <div className="bg-slate-950/90 border border-cyan-500/50 rounded-xl p-3 shadow-xl shadow-cyan-950/50 backdrop-blur-md">
+        <div className="crack-bg bg-slate-950/90 border border-cyan-500/50 rounded-3xl p-3 shadow-xl shadow-cyan-950/50 backdrop-blur-md">
           <div className="flex items-center gap-2.5 mb-2">
             <img
               src={lancerPortrait}
               alt="Operator Portrait"
-              className="w-10 h-10 rounded-lg object-cover border border-cyan-400/60 shadow-md shadow-cyan-950/60"
+              className="w-10 h-10 rounded-2xl object-cover border border-cyan-400/60 shadow-md shadow-cyan-950/60"
             />
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between">
@@ -226,14 +226,14 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </div>
 
               {/* HP Bar */}
-              <div className="h-2.5 w-full bg-slate-900 rounded overflow-hidden p-0.5 border border-slate-700/60 relative mt-1">
+              <div className="h-2.5 w-full bg-slate-900 rounded-full overflow-hidden p-0.5 border border-slate-700/60 relative mt-1">
                 <div
-                  className="h-full bg-gradient-to-r from-emerald-500 via-cyan-400 to-cyan-300 rounded transition-all duration-150"
+                  className="h-full bg-gradient-to-r from-emerald-500 via-cyan-400 to-cyan-300 rounded-full transition-all duration-150"
                   style={{ width: `${Math.max(0, player.hp)}%` }}
                 />
                 {player.shield > 0 && (
                   <div
-                    className="absolute top-0.5 left-0.5 h-full bg-cyan-200/80 rounded border-r border-white animate-pulse"
+                    className="absolute top-0.5 left-0.5 h-full bg-cyan-200/80 rounded-full border-r border-white animate-pulse"
                     style={{ width: `${Math.min(100, player.shield)}%` }}
                   />
                 )}
@@ -325,7 +325,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           </div>
 
           {/* Tactical Discard Feature Badge */}
-          <div className="mt-2 pt-1.5 border-t border-slate-800/80 flex items-center justify-between bg-cyan-950/20 px-2 py-1 rounded border border-cyan-800/40">
+          <div className="mt-2 pt-1.5 border-t border-slate-800/80 flex items-center justify-between bg-cyan-950/20 px-2 py-1 rounded-full border border-cyan-800/40">
             <div className="flex items-center gap-1.5 text-[11px] text-cyan-300 font-bold">
               <Trash2 className="w-3 h-3 text-cyan-400" />
               <span>[X/E] 타일 버리기</span>
@@ -337,7 +337,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
 
         {/* Bottom Left: Controls Guide - Compact & Sleek */}
-        <div className="bg-slate-950/85 border border-slate-800 rounded-xl p-2.5 text-[10px] text-slate-400 backdrop-blur-md mb-2">
+        <div className="crack-bg bg-slate-950/85 border border-slate-800 rounded-3xl p-2.5 text-[10px] text-slate-400 backdrop-blur-md mb-2">
           <div className="font-bold text-[11px] text-slate-300 mb-1 flex items-center gap-1.5">
             <Layers className="w-3 h-3 text-cyan-400" />
             조작 가이드
@@ -371,7 +371,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       <div className="w-[310px] flex flex-col justify-between pointer-events-auto select-none">
         {/* Top: Enemy HP / P2 HP */}
         <div
-          className={`bg-slate-950/90 border rounded-xl p-3 shadow-xl backdrop-blur-md ${
+          className={`crack-bg bg-slate-950/90 border rounded-3xl p-3 shadow-xl backdrop-blur-md ${
             enemy.isBoss && !isMulti
               ? 'border-rose-500/80 shadow-rose-950/60'
               : 'border-red-500/50 shadow-red-950/50'
@@ -381,7 +381,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             <img
               src={sniperPortrait}
               alt="Opponent Portrait"
-              className="w-10 h-10 rounded-lg object-cover border border-rose-500/60 shadow-md shadow-rose-950/60"
+              className="w-10 h-10 rounded-2xl object-cover border border-rose-500/60 shadow-md shadow-rose-950/60"
             />
             <div className="flex-1 min-w-0">
               <div className="flex justify-between items-center">
@@ -412,7 +412,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </div>
 
               {/* Opponent HP Bar */}
-              <div className="h-2.5 w-full bg-slate-900 rounded overflow-hidden p-0.5 border border-slate-700/60 mt-1">
+              <div className="h-2.5 w-full bg-slate-900 rounded-full overflow-hidden p-0.5 border border-slate-700/60 mt-1">
                 <div
                   className={`h-full rounded transition-all duration-150 ${
                     enemy.isBoss && !isMulti
@@ -463,7 +463,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
 
         {/* Center: Live Cluster Preview Under Feet */}
-        <div className="bg-slate-950/85 border border-slate-800 rounded-xl p-3 shadow-lg backdrop-blur-md my-2">
+        <div className="crack-bg bg-slate-950/85 border border-slate-800 rounded-3xl p-3 shadow-lg backdrop-blur-md my-2">
           <div className="text-xs font-bold text-slate-300 mb-1 flex items-center justify-between">
             <span className="flex items-center gap-1.5">
               <Target className="w-3.5 h-3.5 text-cyan-400" />
@@ -513,7 +513,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
         {/* Bottom: 7 Character Archetype Quick Switcher (In Single / Boss Mode) */}
         {!isMulti && (
-          <div className="bg-slate-950/85 border border-slate-800 rounded-xl p-2.5 backdrop-blur-md">
+          <div className="crack-bg bg-slate-950/85 border border-slate-800 rounded-3xl p-2.5 backdrop-blur-md">
             <div className="text-[11px] font-bold text-slate-400 mb-2 flex items-center justify-between">
               <span>SWITCH ARCHETYPE [1~7]</span>
               <span className="text-[10px] text-cyan-400">7 Classes</span>

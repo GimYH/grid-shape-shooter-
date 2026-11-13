@@ -212,13 +212,13 @@ export default function App() {
             <div className="flex gap-4">
               <button
                 onClick={handleTogglePause}
-                className="px-6 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold uppercase cursor-pointer"
+                className="px-6 py-2.5 rounded-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold uppercase cursor-pointer"
               >
                 Resume
               </button>
               <button
                 onClick={handleReturnToTitle}
-                className="px-6 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold cursor-pointer"
+                className="px-6 py-2.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold cursor-pointer"
               >
                 Return to Title
               </button>

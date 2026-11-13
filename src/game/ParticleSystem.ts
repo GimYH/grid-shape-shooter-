@@ -24,6 +24,7 @@ export class ParticleSystem {
       const p = this.particles[i];
       p.x += p.vx * dt;
       p.y += p.vy * dt;
+      if (p.spin) p.angle = (p.angle ?? 0) + p.spin * dt;
       p.life -= dt;
       p.alpha = Math.max(0, p.life / p.maxLife);
       if (p.life <= 0) {
@@ -67,6 +68,9 @@ export class ParticleSystem {
     for (let i = 0; i < count; i++) {
       const angle = Math.random() * Math.PI * 2;
       const speed = 100 + Math.random() * 260;
+      // Mostly tumbling shard triangles (shattering feel), a few soft
+      // circles for glow dust.
+      const isShard = Math.random() > 0.25;
       this.particles.push({
         x,
         y,
@@ -77,7 +81,9 @@ export class ParticleSystem {
         alpha: 1,
         life: 0.4 + Math.random() * 0.4,
         maxLife: 0.8,
-        shape: Math.random() > 0.5 ? 'square' : 'circle',
+        shape: isShard ? 'shard' : 'circle',
+        angle: Math.random() * Math.PI * 2,
+        spin: (Math.random() - 0.5) * 14,
       });
     }
   }

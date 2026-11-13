@@ -50,13 +50,13 @@ export const OnscreenControls: React.FC<OnscreenControlsProps> = ({ engine }) =>
       {showControls && (
         <>
           {/* Mobile Virtual D-Pad (Bottom Left) - lifted cleanly above bottom edge */}
-          <div className="absolute bottom-5 left-5 pointer-events-auto flex flex-col items-center gap-1.5 p-2 bg-slate-950/80 backdrop-blur-md border border-cyan-500/30 rounded-2xl shadow-xl shadow-cyan-950/50">
+          <div className="absolute bottom-5 left-5 pointer-events-auto flex flex-col items-center gap-1.5 p-2 bg-slate-950/80 backdrop-blur-md crack-bg border border-cyan-500/30 rounded-3xl shadow-xl shadow-cyan-950/50">
             <button
               onTouchStart={() => handleDirStart('KeyW')}
               onTouchEnd={() => handleDirEnd('KeyW')}
               onMouseDown={() => handleDirStart('KeyW')}
               onMouseUp={() => handleDirEnd('KeyW')}
-              className={`w-12 h-12 rounded-xl flex items-center justify-center font-bold text-lg border cursor-pointer active:scale-95 transition-all ${
+              className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold text-lg border cursor-pointer active:scale-95 transition-all ${
                 activeDirs['KeyW']
                   ? 'bg-cyan-500 text-slate-950 border-cyan-300 shadow-md shadow-cyan-400/50'
                   : 'bg-slate-900/90 text-cyan-400 border-cyan-500/40 hover:bg-slate-800'
@@ -70,7 +70,7 @@ export const OnscreenControls: React.FC<OnscreenControlsProps> = ({ engine }) =>
                 onTouchEnd={() => handleDirEnd('KeyA')}
                 onMouseDown={() => handleDirStart('KeyA')}
                 onMouseUp={() => handleDirEnd('KeyA')}
-                className={`w-12 h-12 rounded-xl flex items-center justify-center font-bold text-lg border cursor-pointer active:scale-95 transition-all ${
+                className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold text-lg border cursor-pointer active:scale-95 transition-all ${
                   activeDirs['KeyA']
                     ? 'bg-cyan-500 text-slate-950 border-cyan-300 shadow-md shadow-cyan-400/50'
                     : 'bg-slate-900/90 text-cyan-400 border-cyan-500/40 hover:bg-slate-800'
@@ -83,7 +83,7 @@ export const OnscreenControls: React.FC<OnscreenControlsProps> = ({ engine }) =>
                 onTouchEnd={() => handleDirEnd('KeyS')}
                 onMouseDown={() => handleDirStart('KeyS')}
                 onMouseUp={() => handleDirEnd('KeyS')}
-                className={`w-12 h-12 rounded-xl flex items-center justify-center font-bold text-lg border cursor-pointer active:scale-95 transition-all ${
+                className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold text-lg border cursor-pointer active:scale-95 transition-all ${
                   activeDirs['KeyS']
                     ? 'bg-cyan-500 text-slate-950 border-cyan-300 shadow-md shadow-cyan-400/50'
                     : 'bg-slate-900/90 text-cyan-400 border-cyan-500/40 hover:bg-slate-800'
@@ -96,7 +96,7 @@ export const OnscreenControls: React.FC<OnscreenControlsProps> = ({ engine }) =>
                 onTouchEnd={() => handleDirEnd('KeyD')}
                 onMouseDown={() => handleDirStart('KeyD')}
                 onMouseUp={() => handleDirEnd('KeyD')}
-                className={`w-12 h-12 rounded-xl flex items-center justify-center font-bold text-lg border cursor-pointer active:scale-95 transition-all ${
+                className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold text-lg border cursor-pointer active:scale-95 transition-all ${
                   activeDirs['KeyD']
                     ? 'bg-cyan-500 text-slate-950 border-cyan-300 shadow-md shadow-cyan-400/50'
                     : 'bg-slate-900/90 text-cyan-400 border-cyan-500/40 hover:bg-slate-800'
@@ -108,11 +108,11 @@ export const OnscreenControls: React.FC<OnscreenControlsProps> = ({ engine }) =>
           </div>
 
           {/* Mobile Action Buttons (Bottom Right): Dash, Discard, Skill, Launch */}
-          <div className="absolute bottom-5 right-5 pointer-events-auto flex items-end gap-2.5 p-2 bg-slate-950/80 backdrop-blur-md border border-cyan-500/30 rounded-2xl shadow-xl shadow-cyan-950/50">
+          <div className="absolute bottom-5 right-5 pointer-events-auto flex items-end gap-2.5 p-2 bg-slate-950/80 backdrop-blur-md crack-bg border border-cyan-500/30 rounded-3xl shadow-xl shadow-cyan-950/50">
             {/* Dash Button */}
             <button
               onClick={() => engine.handlePlayerDash(1)}
-              className={`w-14 h-14 rounded-xl flex flex-col items-center justify-center border transition-all active:scale-95 cursor-pointer ${
+              className={`w-14 h-14 rounded-full flex flex-col items-center justify-center border transition-all active:scale-95 cursor-pointer ${
                 dashReady
                   ? 'bg-emerald-500/25 border-emerald-400 text-emerald-300 shadow-lg shadow-emerald-950/60'
                   : 'bg-slate-900/60 border-slate-700 text-slate-500'
@@ -127,7 +127,7 @@ export const OnscreenControls: React.FC<OnscreenControlsProps> = ({ engine }) =>
             {/* Discard Button (Fast 0.7s Reload) */}
             <button
               onClick={() => engine.handlePlayerDiscard(1)}
-              className="w-14 h-14 rounded-xl bg-purple-500/25 hover:bg-purple-500/40 border border-purple-400/80 flex flex-col items-center justify-center text-purple-300 shadow-lg shadow-purple-950/50 active:scale-95 transition-all cursor-pointer"
+              className="w-14 h-14 rounded-full bg-purple-500/25 hover:bg-purple-500/40 border border-purple-400/80 flex flex-col items-center justify-center text-purple-300 shadow-lg shadow-purple-950/50 active:scale-95 transition-all cursor-pointer"
             >
               <Trash2 className="w-5 h-5" />
               <span className="text-[9px] font-bold mt-0.5">[X] FLUSH</span>
@@ -136,7 +136,7 @@ export const OnscreenControls: React.FC<OnscreenControlsProps> = ({ engine }) =>
             {/* Skill Button */}
             <button
               onClick={() => engine.handlePlayerSkill(1)}
-              className="w-16 h-16 rounded-xl bg-amber-500/25 hover:bg-amber-500/45 border border-amber-400/80 flex flex-col items-center justify-center text-amber-300 shadow-lg shadow-amber-950/50 active:scale-95 transition-all cursor-pointer"
+              className="w-16 h-16 rounded-full bg-amber-500/25 hover:bg-amber-500/45 border border-amber-400/80 flex flex-col items-center justify-center text-amber-300 shadow-lg shadow-amber-950/50 active:scale-95 transition-all cursor-pointer"
             >
               <Zap className="w-6 h-6" />
               <span className="text-[10px] font-bold mt-0.5">[Ctrl] SKILL</span>

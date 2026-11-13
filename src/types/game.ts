@@ -85,7 +85,10 @@ export interface Particle {
   alpha: number;
   life: number;
   maxLife: number;
-  shape?: 'circle' | 'square' | 'line' | 'ring';
+  shape?: 'circle' | 'square' | 'line' | 'ring' | 'shard';
+  // Shard fragments tumble as they fly (radians / radians per second).
+  angle?: number;
+  spin?: number;
 }
 
 export interface FloatingText {

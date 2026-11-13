@@ -484,11 +484,11 @@ export const GodotExportModal: React.FC<GodotExportModalProps> = ({ isOpen, onCl
 
   return (
     <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 font-['Chakra_Petch']">
-      <div className="bg-slate-950 border border-cyan-500/50 rounded-2xl w-full max-w-5xl h-[85vh] flex flex-col shadow-2xl shadow-cyan-950/80 overflow-hidden">
+      <div className="crack-bg bg-slate-950 border border-cyan-500/50 rounded-[28px] w-full max-w-5xl h-[85vh] flex flex-col shadow-2xl shadow-cyan-950/80 overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/40">
+            <div className="p-2 rounded-2xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/40">
               <FolderTree className="w-5 h-5" />
             </div>
             <div>
@@ -502,7 +502,7 @@ export const GodotExportModal: React.FC<GodotExportModalProps> = ({ isOpen, onCl
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+            className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -521,7 +521,7 @@ export const GodotExportModal: React.FC<GodotExportModalProps> = ({ isOpen, onCl
                 <button
                   key={key}
                   onClick={() => setSelectedKey(key)}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left text-xs transition-all font-mono ${
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-2xl text-left text-xs transition-all font-mono ${
                     active
                       ? 'bg-cyan-600/25 text-cyan-300 border border-cyan-500/40 font-semibold'
                       : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
@@ -541,14 +541,14 @@ export const GodotExportModal: React.FC<GodotExportModalProps> = ({ isOpen, onCl
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleCopy}
-                  className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1 rounded-lg border border-slate-700 transition-colors"
+                  className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1 rounded-xl border border-slate-700 transition-colors"
                 >
                   {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                   <span>{copied ? 'Copied!' : 'Copy Code'}</span>
                 </button>
                 <button
                   onClick={handleDownload}
-                  className="flex items-center gap-1.5 text-xs bg-cyan-600/30 hover:bg-cyan-600/50 text-cyan-300 border border-cyan-500/40 px-3 py-1 rounded-lg transition-colors"
+                  className="flex items-center gap-1.5 text-xs bg-cyan-600/30 hover:bg-cyan-600/50 text-cyan-300 border border-cyan-500/40 px-3 py-1 rounded-xl transition-colors"
                 >
                   <Download className="w-3.5 h-3.5" />
                   <span>Download File</span>
