@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: grid-shape-shooter
+    env: node
+    plan: free
+    region: singapore
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: NODE_ENV=production npm run start
+    healthCheckPath: /
+    autoDeploy: true

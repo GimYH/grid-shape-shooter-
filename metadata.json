@@ -1,0 +1,8 @@
+{
+  "name": "Grid Shape Shooter",
+  "description": "Real-time 16:9 action puzzle prototype with dual 8x4 grids, shape-preserving block launches, geometric combo powers, and 7 character archetypes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

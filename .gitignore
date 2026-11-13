@@ -1,0 +1,12 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+# Bundled artwork is generated from the checked-in *.jpg.b64 sources by
+# scripts/decode-assets.mjs (runs before dev/build). Keep the JPGs out of
+# version control; the .b64 files are the source of truth.
+src/assets/images/*.jpg
