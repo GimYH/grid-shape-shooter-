@@ -7,10 +7,16 @@ import {
 } from '../types/game';
 import { ParticleSystem } from './ParticleSystem';
 import { soundManager } from '../audio/soundManager';
-import { COLOR_HEX } from './GridEngine';
+import { COLOR_HEX, GRID_ROWS } from './GridEngine';
 
 export class ProjectileManager {
   public projectiles: ShapeProjectile[] = [];
+  // v2.2 counter-overcharge: a projectile accelerates only once, the first
+  // time one of its cells wins a neutral clash.
+  private overcharged = new Set<string>();
+  // v2.2: called when a clash is won; GameEngine reduces the launcher's
+  // skill cooldown by 1.0s and counts clashesWon.
+  public onClashWin: ((winnerOwner: 'player' | 'enemy') => void) | null = null;
 
   public createProjectile(
     owner: 'player' | 'enemy',
@@ -21,7 +27,8 @@ export class ProjectileManager {
     cellH: number,
     gap: number,
     archetypeId: string,
-    overdriveActive: boolean = false
+    overdriveActive: boolean = false,
+    frontline: boolean = false
   ): ShapeProjectile {
     // Determine anchor (top-left bounding box of cluster)
     let minC = Infinity, maxC = -Infinity, minR = Infinity, maxR = -Infinity;
@@ -66,6 +73,10 @@ export class ProjectileManager {
     if (overdriveActive) {
       baseDmg *= 1.5;
     }
+    // v2.2 frontline bonus: +25% damage on launches from the front 2 rows.
+    if (frontline) {
+      baseDmg *= 1.25;
+    }
     const finalDmg = Math.round(baseDmg * sizeDmgMult);
 
     // Calculate speed
@@ -81,8 +92,10 @@ export class ProjectileManager {
       speedMult *= 2.0;
     }
 
-    const baseVy = 440; // px/s
-    const vy = owner === 'player' ? -baseVy * speedMult : baseVy * speedMult;
+    const baseVy = 560; // px/s (v2.2)
+    // v2.2 frontline bonus: +15% speed on launches from the front 2 rows.
+    const frontlineSpeed = frontline ? 1.15 : 1.0;
+    const vy = owner === 'player' ? -baseVy * speedMult * frontlineSpeed : baseVy * speedMult * frontlineSpeed;
 
     const cells: ProjectileCell[] = cluster.tiles.map((t) => ({
       relCol: t.col - minC,
@@ -97,6 +110,7 @@ export class ProjectileManager {
       owner,
       color: cluster.color,
       shapeType: cluster.shapeType,
+      archetypeId,
       x: anchorX,
       y: anchorY,
       vx: 0,
@@ -125,7 +139,7 @@ export class ProjectileManager {
     gap: number
   ): ShapeProjectile {
     const x = boardOriginX + col * (cellW + gap);
-    const y = boardOriginY + (owner === 'player' ? 0 : 3 * (cellH + gap));
+    const y = boardOriginY + (owner === 'player' ? 0 : (GRID_ROWS - 1) * (cellH + gap));
     const vy = owner === 'player' ? -800 : 800;
 
     const proj: ShapeProjectile = {
@@ -133,6 +147,7 @@ export class ProjectileManager {
       owner,
       color: 'yellow',
       shapeType: 'spear',
+      archetypeId: 'sniper',
       x,
       y,
       vx: 0,
@@ -156,7 +171,7 @@ export class ProjectileManager {
     playerTargetX: number,
     enemyTargetX: number
   ) {
-    const gap = 8;
+    const gap = 6; // v2.2 cell gap
 
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i];
@@ -199,9 +214,23 @@ export class ProjectileManager {
 
   // Column / Cell-level AABB collision and partial offset destruction
   private resolveBlockCollisions(particleSystem: ParticleSystem) {
-    const gap = 8;
+    const gap = 6; // v2.2 cell gap
     const playerProjs = this.projectiles.filter((p) => p.owner === 'player');
     const enemyProjs = this.projectiles.filter((p) => p.owner === 'enemy');
+
+    // v2.2 type advantage in neutral clashes only: blue > red > yellow >
+    // blue. The advantaged side deals double clash damage. Direct hits on
+    // characters and cores are NOT affected.
+    // Monochrome exception: a red projectile launched by Monochrome ignores
+    // blue's 2x advantage (the exchange stays 1x).
+    const beats = (a: ShapeProjectile, b: ShapeProjectile): boolean => {
+      if (b.color === 'red' && b.archetypeId === 'monochrome') return false;
+      return (
+        (a.color === 'blue' && b.color === 'red') ||
+        (a.color === 'red' && b.color === 'yellow') ||
+        (a.color === 'yellow' && b.color === 'blue')
+      );
+    };
 
     for (const pProj of playerProjs) {
       for (const eProj of enemyProjs) {
@@ -229,9 +258,10 @@ export class ProjectileManager {
               const clashX = (Math.max(pLeft, eLeft) + Math.min(pRight, eRight)) / 2;
               const clashY = (Math.max(pTop, eTop) + Math.min(pBottom, eBottom)) / 2;
 
-              // Exchange damage
-              const pDamageToTake = eCell.hp;
-              const eDamageToTake = pCell.hp;
+              // Exchange damage (type advantage doubles the advantaged
+              // side's clash damage).
+              const pDamageToTake = beats(eProj, pProj) ? eCell.hp * 2 : eCell.hp;
+              const eDamageToTake = beats(pProj, eProj) ? pCell.hp * 2 : pCell.hp;
 
               pCell.hp -= pDamageToTake;
               eCell.hp -= eDamageToTake;
@@ -247,6 +277,20 @@ export class ProjectileManager {
                 particleSystem.emitBlockDestruction(clashX, clashY, eProj.glowColor, 12);
               }
 
+              // v2.2 counter-overcharge: the surviving cell's projectile
+              // accelerates x1.4 once, and its launcher's skill cooldown
+              // drops by 1.0s (via onClashWin).
+              if (pCell.hp > 0 && eCell.hp <= 0 && !this.overcharged.has(pProj.id)) {
+                this.overcharged.add(pProj.id);
+                pProj.vy *= 1.4;
+                this.onClashWin?.('player');
+              }
+              if (eCell.hp > 0 && pCell.hp <= 0 && !this.overcharged.has(eProj.id)) {
+                this.overcharged.add(eProj.id);
+                eProj.vy *= 1.4;
+                this.onClashWin?.('enemy');
+              }
+
               particleSystem.addShockwave(clashX, clashY, 45, '#FFFFFF');
               particleSystem.addFloatingText(clashX, clashY - 10, 'BLOCK!', '#FFFFFF', 14);
             }
@@ -258,5 +302,6 @@ export class ProjectileManager {
 
   public clear() {
     this.projectiles = [];
+    this.overcharged.clear();
   }
 }

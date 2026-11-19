@@ -1,6 +1,6 @@
 # Grid Shape Shooter
 
-실시간 1:1 대전 액션 퍼즐. 8x4 그리드 두 개, 도형 유지 블록 발사, 7개 캐릭터 아키타입. Google AI Studio에서 시작한 프로젝트를 로컬 개발/배포용으로 옮긴 것이다.
+실시간 1:1 대전 액션 퍼즐. 9x5 그리드 두 개, 도형 유지 블록 발사, 7개 캐릭터 아키타입. Google AI Studio에서 시작한 프로젝트를 로컬 개발/배포용으로 옮긴 것이다.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/GimYH/grid-shape-shooter-)
 

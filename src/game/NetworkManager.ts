@@ -2,6 +2,8 @@ import { ArchetypeId } from '../types/game';
 
 export interface NetworkAction {
   // board_hash/board_request/board_sync: periodic board reconciliation.
+  // core_hit: defender-authoritative rear-core HP (v2.2).
+  // sudden_death_anchor: 90s shrink anchor, exchanged once (v2.2).
   type:
     | 'move'
     | 'dash'
@@ -13,7 +15,9 @@ export interface NetworkAction {
     | 'absorb'
     | 'board_hash'
     | 'board_request'
-    | 'board_sync';
+    | 'board_sync'
+    | 'core_hit'
+    | 'sudden_death_anchor';
   data: Record<string, unknown>;
 }
 

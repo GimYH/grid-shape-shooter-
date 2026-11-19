@@ -5,7 +5,7 @@ import { ProjectileManager } from './ProjectileManager';
 import { ParticleSystem } from './ParticleSystem';
 import { CanvasRenderer } from './Renderer';
 import { soundManager } from '../audio/soundManager';
-import { ArchetypeId, Cluster, GameMode, GameStats, SkillEffect } from '../types/game';
+import { ArchetypeId, Cluster, CoreState, GameMode, GameStats, ShrinkPhase, ShrinkRect, SkillEffect } from '../types/game';
 import { ARCHETYPES } from './archetypes';
 import { STAGES } from './stages';
 import { networkManager, NetworkAction } from './NetworkManager';
@@ -19,6 +19,41 @@ export type GameStatus =
   | 'stage_clear'
   | 'victory'
   | 'defeat';
+
+// v2.2 anti-instant-kill: no single direct character hit deals more than
+// 35 damage. (Core hits are not capped.)
+export const MAX_SINGLE_HIT_DMG = 35;
+
+// v2.2 shrink anchor clamp: the 90s safe-zone center is clamped into the
+// inner area (columns 3-7, rows 2-4, 1-indexed) so it never overlaps the
+// core-collapse columns (1 and 9). Exported for headless verification.
+export function clampShrinkAnchor(
+  x: number,
+  y: number,
+  originX: number,
+  originY: number,
+  cellW: number,
+  cellH: number,
+  gap: number
+): { x: number; y: number } {
+  const stepX = cellW + gap;
+  const stepY = cellH + gap;
+  // 0-based columns 2..6 (1-indexed 3..7), rows 1..3 (1-indexed 2..4).
+  const minX = originX + 2 * stepX + cellW / 2;
+  const maxX = originX + 6 * stepX + cellW / 2;
+  const minY = originY + 1 * stepY + cellH / 2;
+  const maxY = originY + 3 * stepY + cellH / 2;
+  return {
+    x: Math.max(minX, Math.min(maxX, x)),
+    y: Math.max(minY, Math.min(maxY, y)),
+  };
+}
+
+// v2.2: a sniper projectile of 1-2 cells deals 50% damage to the rear core
+// (character direct hits stay at 100%).
+export function sniperCoreDamageMult(archetypeId: string | undefined, cellCount: number): number {
+  return archetypeId === 'sniper' && cellCount <= 2 ? 0.5 : 1;
+}
 
 export class GameEngine {
   public canvas: HTMLCanvasElement | null = null;
@@ -60,10 +95,40 @@ export class GameEngine {
   public comboTimer: number = 0;
   public comboMax: number = 0;
 
+  // v2.2: independent combo for the second side (local/online 2P only;
+  // single/boss track the player's combo alone).
+  public combo2Count: number = 0;
+  public combo2Timer: number = 0;
+  public combo2Max: number = 0;
+
   public get comboMultiplier(): number {
     if (this.comboCount <= 1) return 1.0;
     return Math.min(3.0, 1.0 + (this.comboCount - 1) * 0.2);
   }
+
+  public get combo2Multiplier(): number {
+    if (this.combo2Count <= 1) return 1.0;
+    return Math.min(3.0, 1.0 + (this.combo2Count - 1) * 0.2);
+  }
+
+  // v2.2 rear cores: one per side. Player core is always 250 HP; the
+  // enemy core is 250, or 350 in the final boss stage.
+  public playerCore: CoreState = { hp: 250, maxHp: 250, collapsed: false, crack: 0 };
+  public enemyCore: CoreState = { hp: 250, maxHp: 250, collapsed: false, crack: 0 };
+
+  // v2.2 90-second shrink zone. Anchors are each side's character position
+  // at 90s; rects are the current safe zones in canvas coordinates.
+  public shrinkPhase: ShrinkPhase = 'idle';
+  public shrinkAnchor: { x: number; y: number } | null = null;
+  public shrinkAnchor2: { x: number; y: number } | null = null;
+  public shrinkRect: ShrinkRect | null = null;
+  public shrinkRect2: ShrinkRect | null = null;
+  public shrinkSent: boolean = false;
+  private shrinkWarned: boolean = false;
+  private pendingRemoteAnchor: { normX: number; normY: number } | null = null;
+  private shrinkDmgAcc: number = 0;
+  private shrinkDmgAcc2: number = 0;
+  private refillSoundTimer: number = 0;
 
   public stats: GameStats = {
     damageDealt: 0,
@@ -98,6 +163,260 @@ export class GameEngine {
     const eStartX = this.renderer.enemyOriginX + (GRID_COLS * (this.renderer.cellW + this.renderer.gap)) / 2;
     const eStartY = this.renderer.enemyOriginY + (GRID_ROWS * (this.renderer.cellH + this.renderer.gap)) / 2;
     this.enemy = new AIController(eStartX, eStartY);
+    this.resetCores();
+
+    // v2.2 counter-overcharge: a clash winner's launcher gets -1.0s skill
+    // cooldown and the win is counted for the result screen.
+    this.projectileMgr.onClashWin = (winnerOwner) => {
+      this.stats.clashesWon++;
+      if (winnerOwner === 'player') {
+        this.player.skillCooldownRemaining = Math.max(0, this.player.skillCooldownRemaining - 1.0);
+      } else if (this.player2) {
+        this.player2.skillCooldownRemaining = Math.max(0, this.player2.skillCooldownRemaining - 1.0);
+      }
+    };
+  }
+
+  // v2.2: reset both rear cores and the whole shrink-zone state. Called on
+  // every battle start (and from the constructor for the title screen).
+  private resetCores() {
+    const enemyCoreHp = this.mode === 'multi' ? 250 : STAGES[this.currentStage - 1].coreHp;
+    this.playerCore = { hp: 250, maxHp: 250, collapsed: false, crack: 0 };
+    this.enemyCore = { hp: enemyCoreHp, maxHp: enemyCoreHp, collapsed: false, crack: 0 };
+    this.shrinkPhase = 'idle';
+    this.shrinkAnchor = null;
+    this.shrinkAnchor2 = null;
+    this.shrinkRect = null;
+    this.shrinkRect2 = null;
+    this.shrinkSent = false;
+    this.shrinkWarned = false;
+    this.pendingRemoteAnchor = null;
+    this.shrinkDmgAcc = 0;
+    this.shrinkDmgAcc2 = 0;
+  }
+
+  // v2.2: apply damage to a rear core, update its crack stage, and trigger
+  // the 50% collapse (outer columns lock, characters pushed inward).
+  private setCoreHp(side: 'player' | 'enemy', newHp: number) {
+    const core = side === 'player' ? this.playerCore : this.enemyCore;
+    core.hp = Math.max(0, newHp);
+    core.crack = core.hp <= core.maxHp * 0.3 ? 2 : core.hp <= core.maxHp * 0.6 ? 1 : 0;
+    if (!core.collapsed && core.hp <= core.maxHp * 0.5) {
+      this.collapseSide(side);
+    }
+  }
+
+  private damageCore(side: 'player' | 'enemy', dmg: number): number {
+    const core = side === 'player' ? this.playerCore : this.enemyCore;
+    this.setCoreHp(side, core.hp - dmg);
+    return core.hp;
+  }
+
+  // v2.2 core collapse: lock the outer columns and push any character
+  // standing on them one column inward with 0.3s invincibility.
+  private collapseSide(side: 'player' | 'enemy') {
+    const core = side === 'player' ? this.playerCore : this.enemyCore;
+    const board = side === 'player' ? this.playerBoard : this.enemyBoard;
+    if (core.collapsed) return;
+    core.collapsed = true;
+    board.collapseSides();
+    const originX = side === 'player' ? this.renderer.playerOriginX : this.renderer.enemyOriginX;
+    const step = this.renderer.cellW + this.renderer.gap;
+    const centerX = (col: number) => originX + col * step + this.renderer.cellW / 2;
+
+    if (side === 'player') {
+      const c = this.player;
+      if (c.currentCol === 0 || c.currentCol === GRID_COLS - 1) {
+        const inner = c.currentCol === 0 ? 1 : GRID_COLS - 2;
+        c.currentCol = inner;
+        c.x = centerX(inner);
+        c.targetX = c.x;
+        c.invincibleTimer = 0.3;
+        this.particleSystem.addFloatingText(c.x, c.y - 40, 'PUSHED IN!', '#FFD166', 16);
+      }
+    } else if (this.player2) {
+      const c = this.player2;
+      if (c.currentCol === 0 || c.currentCol === GRID_COLS - 1) {
+        const inner = c.currentCol === 0 ? 1 : GRID_COLS - 2;
+        c.currentCol = inner;
+        c.x = centerX(inner);
+        c.targetX = c.x;
+        c.invincibleTimer = 0.3;
+        this.particleSystem.addFloatingText(c.x, c.y - 40, 'PUSHED IN!', '#FFD166', 16);
+      }
+    } else {
+      // Single/boss: the AI opponent.
+      const c = this.enemy;
+      if (c.currentCol === 0 || c.currentCol === GRID_COLS - 1) {
+        const inner = c.currentCol === 0 ? 1 : GRID_COLS - 2;
+        c.currentCol = inner;
+        c.x = centerX(inner);
+        c.invincibleTimer = 0.3;
+        this.particleSystem.addFloatingText(c.x, c.y - 40, 'PUSHED IN!', '#FFD166', 16);
+      }
+    }
+    this.triggerStateUpdate();
+  }
+
+  // v2.2 frontline bonus: a launch counts as frontline when any of its
+  // tiles sits in the front 2 rows (player rows 0-1, enemy rows 3-4).
+  private isFrontlineLaunch(owner: 'player' | 'enemy', cluster: Cluster): boolean {
+    if (owner === 'player') {
+      return cluster.tiles.some((t) => t.row <= 1);
+    }
+    return cluster.tiles.some((t) => t.row >= GRID_ROWS - 2);
+  }
+
+  // --- v2.2 shrink zone ---------------------------------------------------
+  private boardRect(originX: number, originY: number, board: GridBoard): ShrinkRect {
+    const range = board.colRange();
+    const step = this.renderer.cellW + this.renderer.gap;
+    const rowStep = this.renderer.cellH + this.renderer.gap;
+    return {
+      x: originX + range.min * step,
+      y: originY,
+      w: (range.max - range.min + 1) * step - this.renderer.gap,
+      h: GRID_ROWS * rowStep - this.renderer.gap,
+    };
+  }
+
+  // Map a normalized anchor from the peer's bottom board onto my top board.
+  private mirrorAnchor(normX: number, normY: number): { x: number; y: number } {
+    const totalW = GRID_COLS * this.renderer.cellW + (GRID_COLS - 1) * this.renderer.gap;
+    const totalH = GRID_ROWS * this.renderer.cellH + (GRID_ROWS - 1) * this.renderer.gap;
+    return {
+      x: this.renderer.enemyOriginX + normX * totalW,
+      y: this.renderer.enemyOriginY + (1 - normY) * totalH,
+    };
+  }
+
+  // Clamp an anchor into the inner safe area (cols 3-7, rows 2-4) using
+  // this renderer's geometry.
+  private clampAnchor(x: number, y: number, originX: number, originY: number): { x: number; y: number } {
+    return clampShrinkAnchor(x, y, originX, originY, this.renderer.cellW, this.renderer.cellH, this.renderer.gap);
+  }
+
+  private startShrink() {
+    this.shrinkPhase = 'shrinking';
+    // Anchors are clamped into the inner safe area (cols 3-7, rows 2-4)
+    // so the safe zone never sits on a collapsed outer column.
+    this.shrinkAnchor = this.clampAnchor(this.player.x, this.player.y, this.renderer.playerOriginX, this.renderer.playerOriginY);
+    if (this.pendingRemoteAnchor) {
+      const mirrored = this.mirrorAnchor(this.pendingRemoteAnchor.normX, this.pendingRemoteAnchor.normY);
+      this.shrinkAnchor2 = this.clampAnchor(mirrored.x, mirrored.y, this.renderer.enemyOriginX, this.renderer.enemyOriginY);
+      this.pendingRemoteAnchor = null;
+    } else {
+      const opp = this.player2 ?? this.enemy;
+      this.shrinkAnchor2 = this.clampAnchor(opp.x, opp.y, this.renderer.enemyOriginX, this.renderer.enemyOriginY);
+    }
+    this.shrinkRect = this.boardRect(this.renderer.playerOriginX, this.renderer.playerOriginY, this.playerBoard);
+    this.shrinkRect2 = this.boardRect(this.renderer.enemyOriginX, this.renderer.enemyOriginY, this.enemyBoard);
+    if (this.isOnline && !this.shrinkSent) {
+      this.shrinkSent = true;
+      const totalW = GRID_COLS * this.renderer.cellW + (GRID_COLS - 1) * this.renderer.gap;
+      const totalH = GRID_ROWS * this.renderer.cellH + (GRID_ROWS - 1) * this.renderer.gap;
+      // The exchanged anchor is the CLAMPED one.
+      networkManager.sendAction('sudden_death_anchor', {
+        normX: Math.max(0, Math.min(1, (this.shrinkAnchor.x - this.renderer.playerOriginX) / totalW)),
+        normY: Math.max(0, Math.min(1, (this.shrinkAnchor.y - this.renderer.playerOriginY) / totalH)),
+      });
+    }
+    this.particleSystem.addFloatingText(960, 120, '수축 존 시작!', '#FF4444', 24);
+    soundManager.playBossWarning();
+    this.triggerStateUpdate();
+  }
+
+  // Shrink the safe rect from the full (possibly collapsed) board toward a
+  // 2x2-tile zone centered on the anchor over 90..120s; fully closed at 135s.
+  private shrinkRectFor(anchor: { x: number; y: number } | null, full: ShrinkRect | null, t: number): ShrinkRect | null {
+    if (!anchor || !full) return null;
+    const stepX = this.renderer.cellW + this.renderer.gap;
+    const stepY = this.renderer.cellH + this.renderer.gap;
+    const targetW = 2 * stepX - this.renderer.gap;
+    const targetH = 2 * stepY - this.renderer.gap;
+    if (t >= 45) {
+      return { x: anchor.x, y: anchor.y, w: 0, h: 0 };
+    }
+    const progress = Math.min(1, Math.max(0, t / 30));
+    const tx = Math.max(full.x, Math.min(full.x + full.w - targetW, anchor.x - targetW / 2));
+    const ty = Math.max(full.y, Math.min(full.y + full.h - targetH, anchor.y - targetH / 2));
+    return {
+      x: full.x + (tx - full.x) * progress,
+      y: full.y + (ty - full.y) * progress,
+      w: full.w + (targetW - full.w) * progress,
+      h: full.h + (targetH - full.h) * progress,
+    };
+  }
+
+  private updateShrinkRects() {
+    const t = this.gameTime - 90;
+    const fullP = this.boardRect(this.renderer.playerOriginX, this.renderer.playerOriginY, this.playerBoard);
+    const fullE = this.boardRect(this.renderer.enemyOriginX, this.renderer.enemyOriginY, this.enemyBoard);
+    this.shrinkRect = this.shrinkRectFor(this.shrinkAnchor, fullP, t);
+    this.shrinkRect2 = this.shrinkRectFor(this.shrinkAnchor2, fullE, t);
+    if (t >= 45) this.shrinkPhase = 'closed';
+    // Lock every tile whose center lies outside its side's safe rect.
+    this.applyShrinkLocks(this.playerBoard, this.shrinkRect, this.renderer.playerOriginX, this.renderer.playerOriginY);
+    this.applyShrinkLocks(this.enemyBoard, this.shrinkRect2, this.renderer.enemyOriginX, this.renderer.enemyOriginY);
+  }
+
+  private applyShrinkLocks(board: GridBoard, rect: ShrinkRect | null, originX: number, originY: number) {
+    const stepX = this.renderer.cellW + this.renderer.gap;
+    const stepY = this.renderer.cellH + this.renderer.gap;
+    for (let r = 0; r < GRID_ROWS; r++) {
+      for (let c = 0; c < GRID_COLS; c++) {
+        const cx = originX + c * stepX + this.renderer.cellW / 2;
+        const cy = originY + r * stepY + this.renderer.cellH / 2;
+        const inside = !!rect && cx >= rect.x && cx <= rect.x + rect.w && cy >= rect.y && cy <= rect.y + rect.h;
+        board.setShrinkLocked(c, r, !inside);
+      }
+    }
+  }
+
+  private pointInRect(x: number, y: number, rect: ShrinkRect | null): boolean {
+    return !!rect && x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+  }
+
+  // Outside-wall damage: 8 HP/s in 1-HP ticks, ignoring dash
+  // invincibility, plus x0.7 move speed while outside.
+  private applyShrinkDamage(dt: number) {
+    if (this.shrinkRect && !this.pointInRect(this.player.x, this.player.y, this.shrinkRect)) {
+      this.player.externalSpeedMult = 0.7;
+      this.shrinkDmgAcc += 8 * dt;
+      while (this.shrinkDmgAcc >= 1) {
+        this.shrinkDmgAcc -= 1;
+        this.player.hp = Math.max(0, this.player.hp - 1);
+        this.player.hitFlashTimer = 0.2;
+        this.stats.damageTaken += 1;
+      }
+    } else {
+      this.player.externalSpeedMult = 1.0;
+    }
+    if (this.shrinkRect2) {
+      if (this.player2) {
+        if (!this.pointInRect(this.player2.x, this.player2.y, this.shrinkRect2)) {
+          this.player2.externalSpeedMult = 0.7;
+          this.shrinkDmgAcc2 += 8 * dt;
+          while (this.shrinkDmgAcc2 >= 1) {
+            this.shrinkDmgAcc2 -= 1;
+            this.player2!.hp = Math.max(0, this.player2!.hp - 1);
+            this.player2!.hitFlashTimer = 0.2;
+          }
+        } else {
+          this.player2.externalSpeedMult = 1.0;
+        }
+      } else if (!this.pointInRect(this.enemy.x, this.enemy.y, this.shrinkRect2)) {
+        this.enemy.speedMult = 0.7;
+        this.shrinkDmgAcc2 += 8 * dt;
+        while (this.shrinkDmgAcc2 >= 1) {
+          this.shrinkDmgAcc2 -= 1;
+          this.enemy.hp = Math.max(0, this.enemy.hp - 1);
+          this.enemy.hitFlashTimer = 0.2;
+        }
+      } else {
+        this.enemy.speedMult = 1.0;
+      }
+    }
   }
 
   public init(canvas: HTMLCanvasElement) {
@@ -253,6 +572,10 @@ export class GameEngine {
     this.comboCount = 0;
     this.comboTimer = 0;
     this.comboMax = 0;
+    this.combo2Count = 0;
+    this.combo2Timer = 0;
+    this.combo2Max = 0;
+    this.resetCores();
 
     this.stats = {
       damageDealt: 0,
@@ -315,6 +638,10 @@ export class GameEngine {
     this.comboCount = 0;
     this.comboTimer = 0;
     this.comboMax = 0;
+    this.combo2Count = 0;
+    this.combo2Timer = 0;
+    this.combo2Max = 0;
+    this.resetCores();
 
     this.stats = {
       damageDealt: 0,
@@ -432,6 +759,7 @@ export class GameEngine {
           archetypeId: ArchetypeId;
           overdrive?: boolean;
           painterProc?: boolean;
+          frontline?: boolean;
           col?: number;
           row?: number;
         };
@@ -459,7 +787,8 @@ export class GameEngine {
           this.renderer.cellH,
           this.renderer.gap,
           d.archetypeId || this.player2.archetypeId,
-          !!d.overdrive
+          !!d.overdrive,
+          !!d.frontline
         );
         this.enemyBoard.launchCluster(mappedCluster);
         // A launched tile can no longer be a held Transporter grab.
@@ -577,7 +906,9 @@ export class GameEngine {
       }
       case 'discard': {
         const d = action.data as { col: number; row: number };
-        this.enemyBoard.discardTile(d.col, GRID_ROWS - 1 - d.row, 0.7);
+        this.enemyBoard.discardTile(d.col, GRID_ROWS - 1 - d.row);
+        // Keep the remote copy's discard magazine in step with the sender.
+        this.player2.discardStacks = Math.max(0, this.player2.discardStacks - 1);
         soundManager.playDiscard();
         break;
       }
@@ -589,6 +920,29 @@ export class GameEngine {
         this.particleSystem.emitBlockDestruction(this.player2.x, this.player2.y, '#FF3366', 15);
         this.particleSystem.addFloatingText(this.player2.x, this.player2.y - 30, `-${d.dmg} HIT!`, '#FF3366', 18);
         this.triggerStateUpdate();
+        break;
+      }
+      case 'core_hit': {
+        // The peer hit MY core and sends the authoritative HP: apply it to
+        // my copy of their core (the top core on my screen).
+        const d = action.data as { newHp: number; dmg: number };
+        this.setCoreHp('enemy', d.newHp);
+        soundManager.playHit(true, 0);
+        this.particleSystem.addFloatingText(this.player2.x, this.player2.y - 50, `CORE -${d.dmg}!`, '#FF0055', 20);
+        this.triggerStateUpdate();
+        break;
+      }
+      case 'sudden_death_anchor': {
+        // The peer reached 90s and sends its anchor (normalized to its own
+        // bottom board). Mirror it onto my top board. If my shrink has not
+        // started yet, hold it until it does.
+        const d = action.data as { normX: number; normY: number };
+        if (typeof d.normX !== 'number' || typeof d.normY !== 'number') break;
+        if (this.shrinkPhase === 'shrinking' || this.shrinkPhase === 'closed') {
+          this.shrinkAnchor2 = this.mirrorAnchor(d.normX, d.normY);
+        } else {
+          this.pendingRemoteAnchor = { normX: d.normX, normY: d.normY };
+        }
         break;
       }
       case 'board_hash': {
@@ -638,6 +992,10 @@ export class GameEngine {
     this.status = 'playing';
     this.comboCount = 0;
     this.comboTimer = 0;
+    this.combo2Count = 0;
+    this.combo2Timer = 0;
+    this.combo2Max = 0;
+    this.resetCores();
 
     this.playerBoard.reset();
     this.enemyBoard.reset();
@@ -705,6 +1063,8 @@ export class GameEngine {
       }
     }
 
+    const frontline = this.isFrontlineLaunch(ownerStr, cluster);
+
     if (this.isOnline && broadcast && playerNum === 1) {
       networkManager.sendAction('launch', {
         cluster: {
@@ -716,6 +1076,7 @@ export class GameEngine {
         archetypeId: actor.archetypeId,
         overdrive: actor.overdriveActive,
         painterProc,
+        frontline,
         col: actor.currentCol,
         row: actor.currentRow,
       });
@@ -735,7 +1096,8 @@ export class GameEngine {
       this.renderer.cellH,
       this.renderer.gap,
       actor.archetypeId,
-      actor.overdriveActive
+      actor.overdriveActive,
+      frontline
     );
 
     board.launchCluster(cluster);
@@ -765,6 +1127,10 @@ export class GameEngine {
       this.particleSystem.addFloatingText(actor.x, actor.y - 45, 'MEGA BLOCK!', '#FFAA00', 18);
     } else if (cluster.shapeType !== 'standard') {
       this.particleSystem.addFloatingText(actor.x, actor.y - 40, cluster.shapeTitle, '#FFFFFF', 16);
+    }
+
+    if (frontline) {
+      this.particleSystem.addFloatingText(actor.x, actor.y - 62, 'FRONTLINE!', '#FFD166', 15);
     }
 
     this.triggerStateUpdate();
@@ -834,7 +1200,7 @@ export class GameEngine {
     }
   }
 
-  // Player Discard (Fast 0.7s tile flush)
+  // Player Discard (3-stack magazine, 0.45s refill)
   public handlePlayerDiscard(playerNum: 1 | 2 = 1, broadcast: boolean = true) {
     if (this.status !== 'playing') return;
 
@@ -878,6 +1244,7 @@ export class GameEngine {
 
   // AI launch handler
   private handleEnemyLaunch = (cluster: Cluster) => {
+    const overdrive = this.enemy.isBossOverdrive;
     this.projectileMgr.createProjectile(
       'enemy',
       cluster,
@@ -887,9 +1254,13 @@ export class GameEngine {
       this.renderer.cellH,
       this.renderer.gap,
       'standard',
-      this.enemy.isBossOverdrive
+      overdrive,
+      this.isFrontlineLaunch('enemy', cluster)
     );
     this.enemyBoard.launchCluster(cluster);
+    // v2.2: boss overdrive lasts exactly one launch (old bug: stayed on
+    // until the battle ended).
+    if (overdrive) this.enemy.isBossOverdrive = false;
     soundManager.playLaunch(cluster.color, cluster.tiles.length, cluster.shapeType);
     this.particleSystem.emitLaunchParticles(this.enemy.x, this.enemy.y, '#FF3366');
     this.particleSystem.addShockwave(this.enemy.x, this.enemy.y, 60, '#FF3366');
@@ -950,6 +1321,20 @@ export class GameEngine {
       this.screenShake = Math.max(0, this.screenShake - dt * 2);
     }
 
+    // v2.2 90-second shrink zone: warn at 80s, anchor at 90s, then close.
+    if (!this.shrinkWarned && this.gameTime >= 80) {
+      this.shrinkWarned = true;
+      this.shrinkPhase = 'warning';
+      this.particleSystem.addFloatingText(960, 120, '10초 후 수축 중심 고정!', '#FF4444', 22);
+      this.triggerStateUpdate();
+    }
+    if (this.shrinkPhase === 'warning' && this.gameTime >= 90) {
+      this.startShrink();
+    }
+    if (this.shrinkPhase === 'shrinking' || this.shrinkPhase === 'closed') {
+      this.updateShrinkRects();
+    }
+
     // Gamepad polling
     if (typeof navigator !== 'undefined' && navigator.getGamepads) {
       const gamepads = navigator.getGamepads();
@@ -987,14 +1372,24 @@ export class GameEngine {
       }
     }
 
-    // Grid cooldown recovery
-    const playerCDMult = this.player.archetypeId === 'speedster' ? 1.5 : 1.0;
+    // Grid cooldown recovery. Collapsed boards refill 1.3x faster
+    // (1.3s -> 1.0s). The return value tells whether any tile refilled
+    // this frame, which is when the refill sound plays (throttled).
+    const playerCDMult =
+      (this.player.archetypeId === 'speedster' ? 1.5 : 1.0) * (this.playerCore.collapsed ? 1.3 : 1.0);
     const isSniper = this.player.archetypeId === 'sniper';
-    this.playerBoard.update(dt, playerCDMult, isSniper);
+    const playerRefilled = this.playerBoard.update(dt, playerCDMult, isSniper);
 
-    const enemyCDMult = this.player2?.archetypeId === 'speedster' ? 1.5 : 1.0;
+    const enemyCDMult =
+      (this.player2?.archetypeId === 'speedster' ? 1.5 : 1.0) * (this.enemyCore.collapsed ? 1.3 : 1.0);
     const isEnemySniper = this.player2?.archetypeId === 'sniper';
-    this.enemyBoard.update(dt, enemyCDMult, isEnemySniper);
+    const enemyRefilled = this.enemyBoard.update(dt, enemyCDMult, isEnemySniper);
+
+    this.refillSoundTimer -= dt;
+    if ((playerRefilled || enemyRefilled) && this.refillSoundTimer <= 0) {
+      this.refillSoundTimer = 0.05;
+      soundManager.playRefill();
+    }
 
     // Player Movement & Online Position Sync
     if (this.isOnline) {
@@ -1077,6 +1472,9 @@ export class GameEngine {
           true
         );
       } else {
+        // v2.2: during the 80-90s shrink warning the AI heads for the
+        // center so it is not isolated in a corner.
+        this.enemy.moveToCenter = this.shrinkPhase === 'warning';
         this.enemy.update(
           dt,
           this.renderer.enemyOriginX,
@@ -1105,12 +1503,18 @@ export class GameEngine {
       }
     }
 
+    // v2.2 shrink-zone outside-wall damage (after movement, so it reads
+    // the characters' current positions).
+    if (this.shrinkPhase === 'shrinking' || this.shrinkPhase === 'closed') {
+      this.applyShrinkDamage(dt);
+    }
+
     // Projectiles & Particles update
     const target2X = this.player2 ? this.player2.x : this.enemy.x;
     this.projectileMgr.update(dt, this.particleSystem, this.player.x, target2X);
     this.particleSystem.update(dt);
 
-    // Combo streak decay timer (3.5s timeout)
+    // Combo streak decay timer (4.0s timeout, v2.2)
     if (this.comboTimer > 0) {
       this.comboTimer -= dt;
       if (this.comboTimer <= 0) {
@@ -1122,23 +1526,36 @@ export class GameEngine {
       }
     }
 
+    // Second-side combo decay (local/online 2P only).
+    if (this.combo2Timer > 0) {
+      this.combo2Timer -= dt;
+      if (this.combo2Timer <= 0) {
+        this.combo2Timer = 0;
+        if (this.combo2Count > 0) {
+          this.combo2Count = 0;
+          this.triggerStateUpdate();
+        }
+      }
+    }
+
     // Check Projectile Impacts
     this.resolveBoardAndCharacterImpacts();
 
-    // Check Win / Loss condition
+    // Check Win / Loss condition (v2.2: a destroyed rear core also ends
+    // the battle immediately).
     if (this.mode === 'multi' && this.player2) {
-      if (this.player2.hp <= 0 && this.status === 'playing') {
+      if ((this.player2.hp <= 0 || this.enemyCore.hp <= 0) && this.status === 'playing') {
         this.status = 'victory'; // I Won!
         soundManager.playVictory();
         this.triggerStateUpdate();
-      } else if (this.player.hp <= 0 && this.status === 'playing') {
+      } else if ((this.player.hp <= 0 || this.playerCore.hp <= 0) && this.status === 'playing') {
         this.status = 'defeat'; // I Lost!
         soundManager.playDefeat();
         this.triggerStateUpdate();
       }
     } else {
       // Single Mode or Boss Mode
-      if (this.enemy.hp <= 0 && this.status === 'playing') {
+      if ((this.enemy.hp <= 0 || this.enemyCore.hp <= 0) && this.status === 'playing') {
         if (this.mode === 'single' && this.currentStage < 5) {
           this.status = 'stage_clear';
           soundManager.playStageClear();
@@ -1147,7 +1564,7 @@ export class GameEngine {
           soundManager.playVictory();
         }
         this.triggerStateUpdate();
-      } else if (this.player.hp <= 0 && this.status === 'playing') {
+      } else if ((this.player.hp <= 0 || this.playerCore.hp <= 0) && this.status === 'playing') {
         this.status = 'defeat';
         soundManager.playDefeat();
         this.triggerStateUpdate();
@@ -1177,14 +1594,20 @@ export class GameEngine {
           // Direct Hit on Target Hitbox
           const distToTarget = Math.hypot(cellCenterX - targetOpponent.x, cellCenterY - targetOpponent.y);
           if (distToTarget < targetOpponent.radius + cellW / 2) {
+            // v2.2: while the 0.15s consecutive-hit protection (or the
+            // 0.3s collapse-push protection) is up, the cell passes through
+            // with no hit resolution at all — no combo, no cell loss, no
+            // floating text. (Dash evasion keeps its old consume behavior.)
+            if (targetOpponent.invincibleTimer > 0) continue;
             // Consecutive hit combo scaling
             this.comboCount++;
-            this.comboTimer = 3.5;
+            this.comboTimer = 4.0;
             this.comboMax = Math.max(this.comboMax, this.comboCount);
             this.stats.maxCombo = this.comboMax;
 
             const mult = this.comboMultiplier;
-            const finalDmg = Math.round(p.damagePerCell * mult);
+            // v2.2 anti-instant-kill: one direct hit deals at most 35.
+            const finalDmg = Math.min(MAX_SINGLE_HIT_DMG, Math.round(p.damagePerCell * mult));
             targetOpponent.takeDamage(finalDmg, true);
             this.stats.damageDealt += finalDmg;
             targetOpponent.knockbackY = -180;
@@ -1229,18 +1652,71 @@ export class GameEngine {
               const opTile = this.enemyBoard.tiles[targetOpponent.currentRow]?.[targetOpponent.currentCol];
               if (opTile) {
                 opTile.color = null;
-                opTile.cooldownRemaining = 2.0;
+                opTile.cooldownRemaining = 1.3;
+                opTile.cooldownMax = 1.3;
               }
             }
             if (p.shapeType === 'meteor' && !p.isMeteorExploding) {
               p.isMeteorExploding = true;
-              const meteorDmg = Math.round(15 * mult);
+              const meteorDmg = Math.min(MAX_SINGLE_HIT_DMG, Math.round(15 * mult));
               targetOpponent.takeDamage(meteorDmg, true);
               this.stats.damageDealt += meteorDmg;
               this.particleSystem.addShockwave(cellCenterX, cellCenterY, 160, '#FF5500');
               this.particleSystem.addFloatingText(targetOpponent.x, targetOpponent.y - 50, `METEOR -${meteorDmg} AOE!`, '#FF5500', 20);
             }
 
+            // v2.2: 0.15s consecutive-hit protection after a direct hit
+            // (never shortens a longer protection, e.g. the 0.3s push).
+            targetOpponent.invincibleTimer = Math.max(targetOpponent.invincibleTimer, 0.15);
+
+            this.triggerStateUpdate();
+          }
+        }
+
+        // 1b. Rear core hit: a cell that passed through the central 3
+        // columns (4-6) and behind the enemy board strikes the core.
+        // Combo and frontline bonuses apply; red/yellow status effects do not.
+        for (const cell of p.cells) {
+          if (cell.destroyed) continue;
+          const cellLeft = p.x + cell.relCol * (cellW + gap);
+          const cellTop = p.y + cell.relRow * (cellH + gap);
+          const cellCenterX = cellLeft + cellW / 2;
+          const cellCenterY = cellTop + cellH / 2;
+          const col = Math.floor((cellCenterX - this.renderer.enemyOriginX) / (cellW + gap));
+          if (cellCenterY < this.renderer.enemyOriginY && col >= 3 && col <= 5) {
+            this.comboCount++;
+            this.comboTimer = 4.0;
+            this.comboMax = Math.max(this.comboMax, this.comboCount);
+            this.stats.maxCombo = this.comboMax;
+            const mult = this.comboMultiplier;
+            // 90s+ core hits deal double damage.
+            const coreMult = this.gameTime >= 90 ? 2 : 1;
+            // v2.2: sniper 1-2 cell projectiles deal 50% to the core.
+            const finalDmg = Math.round(
+              p.damagePerCell * mult * coreMult * sniperCoreDamageMult(p.archetypeId, p.cells.length)
+            );
+            this.damageCore('enemy', finalDmg);
+            this.stats.damageDealt += finalDmg;
+            cell.destroyed = true;
+            this.hitstopTimer = 0.05;
+            this.screenShake = 0.25;
+            soundManager.playHit(true, this.comboCount);
+            this.particleSystem.emitBlockDestruction(cellCenterX, cellCenterY, p.glowColor, 20);
+            this.particleSystem.addFloatingText(
+              this.renderer.enemyOriginX + 4 * (cellW + gap) + cellW / 2,
+              this.renderer.enemyOriginY - 30,
+              `CORE -${finalDmg}!`,
+              '#FF0055',
+              20
+            );
+            if (p.shapeType === 'meteor' && !p.isMeteorExploding) {
+              p.isMeteorExploding = true;
+              const meteorDmg = Math.round(15 * mult);
+              this.damageCore('enemy', meteorDmg);
+              this.stats.damageDealt += meteorDmg;
+              this.particleSystem.addShockwave(cellCenterX, cellCenterY, 160, '#FF5500');
+              this.particleSystem.addFloatingText(cellCenterX, cellCenterY - 30, `METEOR -${meteorDmg} AOE!`, '#FF5500', 20);
+            }
             this.triggerStateUpdate();
           }
         }
@@ -1258,7 +1734,25 @@ export class GameEngine {
           // Direct Hit on My Hitbox
           const distToPlayer = Math.hypot(cellCenterX - this.player.x, cellCenterY - this.player.y);
           if (distToPlayer < this.player.radius + cellW / 2) {
-            const dmg = p.damagePerCell;
+            // v2.2: while the 0.15s consecutive-hit protection (or the
+            // 0.3s collapse-push protection) is up, the cell passes through
+            // with no hit resolution at all.
+            if (this.player.invincibleTimer > 0) continue;
+            // Second-side combo (local/online 2P only). In local 2P the
+            // damage scales with it; online, the attacker's own client is
+            // the damage authority for its combo, so this side keeps the
+            // unscaled value and the 'hit' packet syncs HP.
+            let dmg = p.damagePerCell;
+            if (this.mode === 'multi') {
+              this.combo2Count++;
+              this.combo2Timer = 4.0;
+              this.combo2Max = Math.max(this.combo2Max, this.combo2Count);
+              if (!this.isOnline) {
+                dmg = Math.round(p.damagePerCell * this.combo2Multiplier);
+              }
+            }
+            // v2.2 anti-instant-kill: one direct hit deals at most 35.
+            dmg = Math.min(MAX_SINGLE_HIT_DMG, dmg);
             this.player.takeDamage(dmg, true);
             this.stats.damageTaken += dmg;
             this.player.knockbackY = 180;
@@ -1277,13 +1771,61 @@ export class GameEngine {
               const pTile = this.playerBoard.tiles[this.player.currentRow]?.[this.player.currentCol];
               if (pTile) {
                 pTile.color = null;
-                pTile.cooldownRemaining = 2.0;
+                pTile.cooldownRemaining = 1.3;
+                pTile.cooldownMax = 1.3;
               }
             }
             if (p.color === 'yellow') {
               this.player.slowTimer = 2.0;
               this.playerBoard.contaminateAt(this.player.currentCol, this.player.currentRow);
             }
+            // v2.2: 0.15s consecutive-hit protection after a direct hit.
+            this.player.invincibleTimer = Math.max(this.player.invincibleTimer, 0.15);
+          }
+        }
+
+        // 2b. Rear core hit on my core (central 3 columns, behind my board).
+        for (const cell of p.cells) {
+          if (cell.destroyed) continue;
+          const cellLeft = p.x + cell.relCol * (cellW + gap);
+          const cellTop = p.y + cell.relRow * (cellH + gap);
+          const cellCenterX = cellLeft + cellW / 2;
+          const cellCenterY = cellTop + cellH / 2;
+          const col = Math.floor((cellCenterX - this.renderer.playerOriginX) / (cellW + gap));
+          const boardBottom = this.renderer.playerOriginY + GRID_ROWS * (cellH + gap) - gap;
+          if (cellCenterY > boardBottom && col >= 3 && col <= 5) {
+            let dmg = p.damagePerCell;
+            if (this.mode === 'multi') {
+              this.combo2Count++;
+              this.combo2Timer = 4.0;
+              this.combo2Max = Math.max(this.combo2Max, this.combo2Count);
+              if (!this.isOnline) {
+                dmg = Math.round(p.damagePerCell * this.combo2Multiplier);
+              }
+            }
+            const coreMult = this.gameTime >= 90 ? 2 : 1;
+            // v2.2: sniper 1-2 cell projectiles deal 50% to the core.
+            const finalDmg = Math.round(dmg * coreMult * sniperCoreDamageMult(p.archetypeId, p.cells.length));
+            const newHp = this.damageCore('player', finalDmg);
+            this.stats.damageTaken += finalDmg;
+            cell.destroyed = true;
+            this.hitstopTimer = 0.05;
+            this.screenShake = 0.25;
+            soundManager.playHit(true, this.combo2Count);
+            this.particleSystem.emitBlockDestruction(cellCenterX, cellCenterY, p.glowColor, 20);
+            this.particleSystem.addFloatingText(
+              this.renderer.playerOriginX + 4 * (cellW + gap) + cellW / 2,
+              boardBottom + 30,
+              `CORE -${finalDmg}!`,
+              '#FF0055',
+              20
+            );
+            // Online: the defender is the damage authority; send the
+            // authoritative HP so the attacker's copy of my core syncs.
+            if (this.isOnline) {
+              networkManager.sendAction('core_hit', { newHp, dmg: finalDmg });
+            }
+            this.triggerStateUpdate();
           }
         }
       }
@@ -1303,6 +1845,7 @@ export class GameEngine {
     this.enemyBoard.reset();
     this.projectileMgr.clear();
     this.particleSystem.clear();
+    this.resetCores();
     this.triggerStateUpdate();
   }
 
@@ -1351,7 +1894,12 @@ export class GameEngine {
       this.projectileMgr,
       this.particleSystem,
       this.screenShake,
-      this.gameTime
+      this.gameTime,
+      this.playerCore,
+      this.enemyCore,
+      this.shrinkRect,
+      this.shrinkRect2,
+      this.shrinkPhase
     );
   }
 

@@ -140,7 +140,7 @@ export default function App() {
   return (
     <div
       ref={containerRef}
-      className="relative w-screen h-screen bg-black flex items-center justify-center overflow-hidden"
+      className="relative w-screen h-screen bg-[#07090F] flex items-center justify-center overflow-hidden"
     >
       {/* 16:9 Letterboxed Game Container */}
       <div

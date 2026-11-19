@@ -1,5 +1,8 @@
 import { StageConfig } from '../types/game';
 
+// v2.2: AIController가 이 수치를 직접 참조한다(단일 소스). 비보스 체력은
+// 전 스테이지 100, 보스 200. 이동속도/의사결정 간격/발사 대기는 하이템포
+// 수치로 교체됐다.
 export const STAGES: StageConfig[] = [
   {
     stage: 1,
@@ -8,8 +11,10 @@ export const STAGES: StageConfig[] = [
     desc: '기본적인 3칸 클러스터를 느린 주기로 사출합니다. 조작감과 바닥 버리기(L 키)를 숙달하기 좋습니다.',
     enemyHp: 100,
     aiReactionTime: 0.8,
-    aiMoveSpeed: 220,
+    aiMoveSpeed: 260,
+    aiLaunchWait: 1.0,
     aiMinClusterSize: 3,
+    coreHp: 250,
     isBoss: false,
   },
   {
@@ -17,21 +22,25 @@ export const STAGES: StageConfig[] = [
     name: 'Vector Hunter',
     nameKo: '스테이지 2: 벡터 헌터',
     desc: '위험 열(Column)을 감지하여 안전한 라인으로 회피하며, 3~5칸 클러스터를 꾸준히 형성합니다.',
-    enemyHp: 110,
+    enemyHp: 100,
     aiReactionTime: 0.55,
-    aiMoveSpeed: 270,
+    aiMoveSpeed: 320,
+    aiLaunchWait: 0.9,
     aiMinClusterSize: 3,
+    coreHp: 250,
     isBoss: false,
   },
   {
     stage: 3,
     name: 'Cyber Sentinel',
     nameKo: '스테이지 3: 사이버 센티널',
-    desc: '빠른 반응속도로 플레이어 투사체 라인을 예측하여 요격(Blue 블록)하거나 회피합니다.',
-    enemyHp: 125,
+    desc: '빠른 반응속도로 플레이어 투사체 라인을 예측해 회피하거나 점수 기반 클러스터를 집중 사출합니다.',
+    enemyHp: 100,
     aiReactionTime: 0.4,
-    aiMoveSpeed: 310,
+    aiMoveSpeed: 370,
+    aiLaunchWait: 0.7,
     aiMinClusterSize: 3,
+    coreHp: 250,
     isBoss: false,
   },
   {
@@ -39,23 +48,27 @@ export const STAGES: StageConfig[] = [
     name: 'Nexus Dominator',
     nameKo: '스테이지 4: 넥서스 도미네이터',
     desc: '불필요한 타일을 빠르게 디스카드하며 6~9칸 이상의 대형 빅 블록을 집요하게 파밍합니다.',
-    enemyHp: 140,
+    enemyHp: 100,
     aiReactionTime: 0.28,
-    aiMoveSpeed: 350,
+    aiMoveSpeed: 410,
+    aiLaunchWait: 0.65,
     aiMinClusterSize: 4,
+    coreHp: 250,
     isBoss: false,
   },
   {
     stage: 5,
     name: 'OMNI-OVERLORD [FINAL BOSS]',
     nameKo: '파이널 보스: 옴니-오버로드',
-    desc: '체력 2배(HP 200)! 7대 아키타입의 모든 고유기(크림슨 랜스, 타이드 서지, 저격 빔, 크로마 퓨전, 오버드라이브)를 실시간으로 시전합니다.',
+    desc: '체력 2배(HP 200)! 5종 스킬(크림슨 스트라이크, 타이드 플러드, 옴니 빔, 크로마 퓨전, 오버드라이브 서지)을 순환 시전합니다.',
     enemyHp: 200,
-    aiReactionTime: 0.25,
-    aiMoveSpeed: 370,
+    aiReactionTime: 0.28,
+    aiMoveSpeed: 410,
+    aiLaunchWait: 0.55,
     aiMinClusterSize: 3,
+    coreHp: 350,
     isBoss: true,
-    bossSkillInterval: 4.5,
+    bossSkillInterval: 4.2,
   },
 ];
 

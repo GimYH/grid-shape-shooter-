@@ -72,6 +72,30 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, onR
           </div>
         </div>
 
+        {/* Battle Stats Grid (v2.2) */}
+        <div className="grid grid-cols-3 gap-3 w-full mb-6 text-left">
+          <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl">
+            <span className="text-[11px] text-slate-400 block mb-0.5">MAX COMBO</span>
+            <span className="text-xl font-bold font-mono text-amber-400 tabular-nums">
+              {stats.maxCombo}
+            </span>
+          </div>
+
+          <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl">
+            <span className="text-[11px] text-slate-400 block mb-0.5">BATTLE TIME</span>
+            <span className="text-xl font-bold font-mono text-white tabular-nums">
+              {`${Math.floor(stats.gameDuration / 60)}:${String(Math.floor(stats.gameDuration % 60)).padStart(2, '0')}`}
+            </span>
+          </div>
+
+          <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl">
+            <span className="text-[11px] text-slate-400 block mb-0.5">CLASHES WON</span>
+            <span className="text-xl font-bold font-mono text-cyan-400 tabular-nums">
+              {stats.clashesWon}
+            </span>
+          </div>
+        </div>
+
         {/* Buttons */}
         <div className="flex flex-col gap-2.5 w-full">
           <button
