@@ -1,8 +1,9 @@
 import { GridTile, TileColor, Cluster, ShapePatternType } from '../types/game';
 
-export const GRID_COLS = 8;
-export const GRID_ROWS = 4;
-export const BASE_REFILL_TIME = 2.0;
+export const GRID_COLS = 9;
+export const GRID_ROWS = 5;
+export const BASE_REFILL_TIME = 1.3;
+export const DISCARD_REFILL_TIME = 0.45;
 
 export const TILE_COLORS: TileColor[] = ['red', 'blue', 'yellow'];
 
@@ -29,6 +30,11 @@ export class GridBoard {
   // refill RNG draws happen in the sender's row-major order and the two
   // copies stay aligned.
   public mirrored: boolean = false;
+  // v2.2 rear-core collapse: when the owning side's core drops to 50% or
+  // below, the outer columns (1 and 9) lock and the board plays 7 wide.
+  public collapsed: boolean = false;
+  // v2.2 shrink zone: tiles covered by the closing wall lock individually.
+  private shrinkLocked: boolean[][] = [];
 
   constructor(owner: 'player' | 'enemy', seed?: number) {
     this.owner = owner;
@@ -52,6 +58,10 @@ export class GridBoard {
       this.rngSeed = Math.abs(seed) || 1234567;
     }
     this.mirrored = mirrored;
+    this.collapsed = false;
+    this.shrinkLocked = Array.from({ length: GRID_ROWS }, () =>
+      Array(GRID_COLS).fill(false)
+    );
     this.tiles = [];
     for (let r = 0; r < GRID_ROWS; r++) {
       const row: GridTile[] = [];
@@ -63,6 +73,7 @@ export class GridBoard {
           row: r,
           color: randColor,
           cooldownRemaining: 0,
+          cooldownMax: 0,
           pulsePhase: this.nextRandom() * Math.PI * 2,
         });
       }
@@ -80,6 +91,32 @@ export class GridBoard {
     this.updateClusters(false);
   }
 
+  // Inclusive playable column range. Collapsed boards lose columns 1 and 9
+  // (0 and 8 in 0-based indices) and play 7 wide.
+  public colRange(): { min: number; max: number } {
+    return this.collapsed ? { min: 1, max: GRID_COLS - 2 } : { min: 0, max: GRID_COLS - 1 };
+  }
+
+  public isTileLocked(col: number, row: number): boolean {
+    if (col < 0 || col >= GRID_COLS || row < 0 || row >= GRID_ROWS) return true;
+    const range = this.colRange();
+    if (col < range.min || col > range.max) return true;
+    return this.shrinkLocked[row]?.[col] === true;
+  }
+
+  // v2.2 core collapse: lock the outer columns immediately. Tiles already
+  // there keep their color but leave every cluster and cannot be used.
+  public collapseSides() {
+    this.collapsed = true;
+    this.updateClusters(false);
+  }
+
+  // v2.2 shrink zone: lock/unlock one tile as the wall passes over it.
+  public setShrinkLocked(col: number, row: number, locked: boolean) {
+    if (col < 0 || col >= GRID_COLS || row < 0 || row >= GRID_ROWS) return;
+    this.shrinkLocked[row][col] = locked;
+  }
+
   public update(dt: number, cooldownSpeedMult: number = 1.0, isSniper: boolean = false): boolean {
     let hasRefilled = false;
 
@@ -93,6 +130,8 @@ export class GridBoard {
         const tile = this.tiles[r][c];
         tile.pulsePhase += dt * 3;
 
+        // Locked tiles freeze: their cooldown neither ticks nor refills.
+        if (this.isTileLocked(c, r)) continue;
         if (tile.cooldownRemaining > 0) {
           tile.cooldownRemaining -= dt * cooldownSpeedMult;
           if (tile.cooldownRemaining <= 0) {
@@ -124,6 +163,12 @@ export class GridBoard {
 
     for (let r = 0; r < GRID_ROWS; r++) {
       for (let c = 0; c < GRID_COLS; c++) {
+        // Locked tiles (collapsed columns, shrink wall) are excluded from
+        // every cluster and marked visited so they never seed one.
+        if (this.isTileLocked(c, r)) {
+          visited[r][c] = true;
+          continue;
+        }
         if (visited[r][c]) continue;
         const startTile = this.tiles[r][c];
         if (!startTile.color) continue; // In cooldown
@@ -237,20 +282,24 @@ export class GridBoard {
   // Launch cluster -> turn all into cooldown
   public launchCluster(cluster: Cluster, customCooldown: number = BASE_REFILL_TIME) {
     for (const t of cluster.tiles) {
+      if (this.isTileLocked(t.col, t.row)) continue;
       const tile = this.tiles[t.row][t.col];
       tile.color = null;
       tile.cooldownRemaining = customCooldown;
+      tile.cooldownMax = customCooldown;
     }
   }
 
-  // Fast discard single tile or small unprimed group (0.7s reload)
-  public discardTile(col: number, row: number, customCooldown: number = 0.7): boolean {
+  // Fast discard single tile or small unprimed group (0.45s reload, v2.2)
+  public discardTile(col: number, row: number, customCooldown: number = DISCARD_REFILL_TIME): boolean {
     if (col < 0 || col >= GRID_COLS || row < 0 || row >= GRID_ROWS) return false;
     const tile = this.tiles[row][col];
     if (!tile.color) return false; // Already in cooldown
+    if (this.isTileLocked(col, row)) return false;
 
     tile.color = null;
     tile.cooldownRemaining = customCooldown;
+    tile.cooldownMax = customCooldown;
     return true;
   }
 
@@ -279,7 +328,7 @@ export class GridBoard {
     if (row < 0 || row >= GRID_ROWS) return [];
     const picks: { col: number; row: number; color: TileColor }[] = [];
     for (let c = 0; c < GRID_COLS; c++) {
-      if (this.tiles[row][c].cooldownRemaining > 0) {
+      if (this.tiles[row][c].cooldownRemaining > 0 && !this.isTileLocked(c, row)) {
         const color = TILE_COLORS[Math.floor(Math.random() * TILE_COLORS.length)];
         this.tiles[row][c].cooldownRemaining = 0;
         this.tiles[row][c].color = color;
@@ -294,6 +343,7 @@ export class GridBoard {
     if (row < 0 || row >= GRID_ROWS) return;
     for (const p of picks) {
       if (p.row !== row || p.col < 0 || p.col >= GRID_COLS) continue;
+      if (this.isTileLocked(p.col, row)) continue;
       this.tiles[row][p.col].cooldownRemaining = 0;
       this.tiles[row][p.col].color = p.color;
     }
@@ -305,6 +355,7 @@ export class GridBoard {
     let converted = 0;
     for (let r = 0; r < GRID_ROWS; r++) {
       if (converted >= count) break;
+      if (this.isTileLocked(col, r)) continue;
       const tile = this.tiles[r][col];
       tile.color = 'red';
       tile.cooldownRemaining = 0;
@@ -321,7 +372,7 @@ export class GridBoard {
     const candidates: { col: number; row: number }[] = [];
     for (let r = 0; r < GRID_ROWS; r++) {
       for (let c = 0; c < GRID_COLS; c++) {
-        if (this.tiles[r][c].color !== 'red') {
+        if (this.tiles[r][c].color !== 'red' && !this.isTileLocked(c, r)) {
           candidates.push({ col: c, row: r });
         }
       }
@@ -343,6 +394,7 @@ export class GridBoard {
   public convertTilesToRed(tiles: { col: number; row: number }[]) {
     for (const t of tiles) {
       if (t.col < 0 || t.col >= GRID_COLS || t.row < 0 || t.row >= GRID_ROWS) continue;
+      if (this.isTileLocked(t.col, t.row)) continue;
       this.tiles[t.row][t.col].color = 'red';
       this.tiles[t.row][t.col].cooldownRemaining = 0;
     }
@@ -359,7 +411,7 @@ export class GridBoard {
       { c: centerCol, r: centerRow - 1 },
     ];
     for (const t of targets) {
-      if (t.c >= 0 && t.c < GRID_COLS && t.r >= 0 && t.r < GRID_ROWS) {
+      if (t.c >= 0 && t.c < GRID_COLS && t.r >= 0 && t.r < GRID_ROWS && !this.isTileLocked(t.c, t.r)) {
         this.tiles[t.r][t.c].color = dom;
         this.tiles[t.r][t.c].cooldownRemaining = 0;
       }
@@ -372,6 +424,7 @@ export class GridBoard {
       c1 < 0 || c1 >= GRID_COLS || r1 < 0 || r1 >= GRID_ROWS ||
       c2 < 0 || c2 >= GRID_COLS || r2 < 0 || r2 >= GRID_ROWS
     ) return;
+    if (this.isTileLocked(c1, r1) || this.isTileLocked(c2, r2)) return;
     const tempColor = this.tiles[r1][c1].color;
     const tempCD = this.tiles[r1][c1].cooldownRemaining;
 
@@ -396,6 +449,7 @@ export class GridBoard {
     ];
     for (const t of targets) {
       if (t.c < 0 || t.c >= GRID_COLS || t.r < 0 || t.r >= GRID_ROWS) continue;
+      if (this.isTileLocked(t.c, t.r)) continue;
       const tile = this.tiles[t.r][t.c];
       tile.color = nextColor(tile.color);
       tile.cooldownRemaining = 0;

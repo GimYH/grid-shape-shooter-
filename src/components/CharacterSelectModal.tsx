@@ -184,7 +184,7 @@ export const CharacterSelectModal: React.FC<CharacterSelectModalProps> = ({
               {/* Discard Tip */}
               <div className="text-[11px] text-slate-400 bg-cyan-950/30 border border-cyan-800/40 rounded-2xl p-2.5 break-keep text-pretty">
                 <span className="font-bold text-cyan-300">💡 DISCARD 전술: </span>
-                패가 꼬였을 때 <kbd className="px-1 py-0.5 bg-slate-800 text-white rounded font-mono">[X]</kbd> 또는 <kbd className="px-1 py-0.5 bg-slate-800 text-white rounded font-mono">[E]</kbd> 키를 누르면 0.7초 만에 발밑 타일을 빠르게 버리고 새 타일을 뽑을 수 있습니다.
+                패가 꼬였을 때 <kbd className="px-1 py-0.5 bg-slate-800 text-white rounded font-mono">[X]</kbd> 또는 <kbd className="px-1 py-0.5 bg-slate-800 text-white rounded font-mono">[E]</kbd> 키를 누르면 발밑 타일을 빠르게 버리고 새 타일을 뽑을 수 있습니다. (3스택 탄창, 버린 타일은 0.45초 뒤 리필)
               </div>
             </div>
 

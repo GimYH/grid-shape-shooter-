@@ -105,11 +105,11 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 
         <div className="inline-flex items-center gap-2 bg-slate-900/80 border border-cyan-500/30 px-3 py-1 rounded-full text-xs font-semibold text-cyan-300 mb-5">
           <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-          Real-Time 8x4 Grid Action Puzzle · Online 1v1 Link Battles Ready
+          Real-Time 9x5 Grid Action Puzzle · Online 1v1 Link Battles Ready
         </div>
 
         <p className="text-slate-300 text-xs sm:text-sm max-w-lg leading-relaxed mb-6">
-          3칸 이상 연결된 발판을 밟고 거대 형상 투사체를 사출하세요. 대시(Shift)로 적의 탄환을 회피하고, 패가 꼬였을 땐 디스카드(X/E)로 0.7초 만에 바닥을 리로드하여 승리하세요!
+          3칸 이상 연결된 발판을 밟고 거대 형상 투사체를 사출하세요. 대시(Shift)로 적의 탄환을 회피하고, 패가 꼬였을 땐 디스카드(X/E) 3스택 탄창으로 바닥을 리로드하여 승리하세요!
         </p>
 
         {/* 4 Core Game Modes Grid (Local 2P restored) */}
@@ -176,7 +176,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           <span>•</span>
           <span className="whitespace-nowrap"><strong className="text-amber-400">[Ctrl]</strong> 스킬</span>
           <span>•</span>
-          <span className="whitespace-nowrap"><strong className="text-purple-400">[X/E]</strong> 타일 버리기(0.7s)</span>
+          <span className="whitespace-nowrap"><strong className="text-purple-400">[X/E]</strong> 타일 버리기(3스택)</span>
         </div>
       </div>
     </div>

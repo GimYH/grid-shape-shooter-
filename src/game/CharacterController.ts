@@ -39,10 +39,18 @@ export class PlayerCharacter {
   public isPlayer2: boolean = false;
 
   // Dash System
-  public dashCooldownMax: number = 2.5;
+  public dashCooldownMax: number = 1.6;
   public dashCooldownRemaining: number = 0;
   public dashDurationRemaining: number = 0;
   public isInvincible: boolean = false;
+  // v2.2: collapse-push invulnerability (0.3s) is separate from the dash
+  // window so it never grants the dash speed burst.
+  public invincibleTimer: number = 0;
+  // v2.2: 3-stack discard magazine, 1 stack recharges every 1.2s.
+  public discardStacks: number = 3;
+  public discardRecharge: number = 0;
+  // v2.2: shrink-zone outside-wall speed penalty (x0.7), set by GameEngine.
+  public externalSpeedMult: number = 1.0;
   public moveDir: { x: number; y: number } = { x: 0, y: -1 };
 
   // Remote smooth interpolation targets
@@ -69,7 +77,7 @@ export class PlayerCharacter {
 
   public performDash(particleSystem: ParticleSystem): boolean {
     if (this.dashCooldownRemaining > 0) return false;
-    const maxCD = this.archetypeId === 'speedster' ? 1.5 : 2.5;
+    const maxCD = this.archetypeId === 'speedster' ? 1.0 : 1.6;
     this.dashCooldownMax = maxCD;
     this.dashCooldownRemaining = maxCD;
     this.dashDurationRemaining = 0.16;
@@ -82,8 +90,10 @@ export class PlayerCharacter {
   }
 
   public discardCurrentTile(board: GridBoard, particleSystem: ParticleSystem): boolean {
-    const success = board.discardTile(this.currentCol, this.currentRow, 0.7);
+    if (this.discardStacks <= 0) return false;
+    const success = board.discardTile(this.currentCol, this.currentRow);
     if (success) {
+      this.discardStacks -= 1;
       // If the Transporter discarded the tile it was holding, clear the grab
       // so a later swap cannot target an empty (stale) tile.
       if (
@@ -96,7 +106,7 @@ export class PlayerCharacter {
       }
       soundManager.playDiscard();
       particleSystem.emitBlockDestruction(this.x, this.y, '#33CCFF', 8);
-      particleSystem.addFloatingText(this.x, this.y - 25, 'FLUSH (0.7s)', '#33CCFF', 14);
+      particleSystem.addFloatingText(this.x, this.y - 25, 'FLUSH', '#33CCFF', 14);
       return true;
     }
     return false;
@@ -131,15 +141,26 @@ export class PlayerCharacter {
     }
     if (this.dashDurationRemaining > 0) {
       this.dashDurationRemaining = Math.max(0, this.dashDurationRemaining - dt);
-      this.isInvincible = true;
-    } else {
-      this.isInvincible = false;
     }
+    if (this.invincibleTimer > 0) {
+      this.invincibleTimer = Math.max(0, this.invincibleTimer - dt);
+    }
+    this.isInvincible = this.dashDurationRemaining > 0 || this.invincibleTimer > 0;
     if (this.hitFlashTimer > 0) {
       this.hitFlashTimer = Math.max(0, this.hitFlashTimer - dt);
     }
     if (this.slowTimer > 0) {
       this.slowTimer = Math.max(0, this.slowTimer - dt);
+    }
+    // v2.2 discard magazine recharge: 1 stack per 1.2s.
+    if (this.discardStacks < 3) {
+      this.discardRecharge += dt;
+      if (this.discardRecharge >= 1.2) {
+        this.discardRecharge -= 1.2;
+        this.discardStacks = Math.min(3, this.discardStacks + 1);
+      }
+    } else {
+      this.discardRecharge = 0;
     }
 
     // Determine current grid cell under feet
@@ -154,7 +175,7 @@ export class PlayerCharacter {
     const currentTile = board.tiles[this.currentRow]?.[this.currentCol];
 
     // Calculate movement speed
-    let baseSpeed = 340;
+    let baseSpeed = 420;
     if (this.archetypeId === 'transporter') {
       baseSpeed *= 1.15; // +15% passive
     }
@@ -172,6 +193,11 @@ export class PlayerCharacter {
     // Yellow hit slow: -40% speed
     if (this.slowTimer > 0) {
       baseSpeed *= 0.6;
+    }
+
+    // Shrink zone: outside the wall the character slows to x0.7.
+    if (this.externalSpeedMult !== 1.0) {
+      baseSpeed *= this.externalSpeedMult;
     }
 
     // Input movement vector.
@@ -226,9 +252,11 @@ export class PlayerCharacter {
     this.x += this.vx * dt;
     this.y += this.vy * dt;
 
-    // Clamp to player board boundaries
-    const minX = boardOriginX + this.radius;
-    const maxX = boardOriginX + GRID_COLS * colStep - gap - this.radius;
+    // Clamp to player board boundaries (collapsed boards lose the outer
+    // columns, so the playable range shrinks with them).
+    const colRange = board.colRange();
+    const minX = boardOriginX + colRange.min * colStep + this.radius;
+    const maxX = boardOriginX + (colRange.max + 1) * colStep - gap - this.radius;
     const minY = boardOriginY + this.radius;
     const maxY = boardOriginY + GRID_ROWS * rowStep - gap - this.radius;
 
@@ -257,15 +285,26 @@ export class PlayerCharacter {
     }
     if (this.dashDurationRemaining > 0) {
       this.dashDurationRemaining = Math.max(0, this.dashDurationRemaining - dt);
-      this.isInvincible = true;
-    } else {
-      this.isInvincible = false;
     }
+    if (this.invincibleTimer > 0) {
+      this.invincibleTimer = Math.max(0, this.invincibleTimer - dt);
+    }
+    this.isInvincible = this.dashDurationRemaining > 0 || this.invincibleTimer > 0;
     if (this.hitFlashTimer > 0) {
       this.hitFlashTimer = Math.max(0, this.hitFlashTimer - dt);
     }
     if (this.slowTimer > 0) {
       this.slowTimer = Math.max(0, this.slowTimer - dt);
+    }
+    // v2.2 discard magazine recharge (remote peer copy ticks the same way).
+    if (this.discardStacks < 3) {
+      this.discardRecharge += dt;
+      if (this.discardRecharge >= 1.2) {
+        this.discardRecharge -= 1.2;
+        this.discardStacks = Math.min(3, this.discardStacks + 1);
+      }
+    } else {
+      this.discardRecharge = 0;
     }
   }
 
@@ -394,6 +433,7 @@ export class PlayerCharacter {
         const tile = board.tiles[this.currentRow]?.[this.currentCol];
         if (tile) {
           tile.cooldownRemaining = 0;
+          tile.cooldownMax = 0;
           tile.color = 'yellow';
         }
         particleSystem.addFloatingText(this.x, this.y - 30, 'BLINK CHARGE!', '#FFCC00', 16);
@@ -419,7 +459,10 @@ export class PlayerCharacter {
   }
 
   public takeDamage(amount: number, isDirect: boolean = true) {
-    if (this.isInvincible) {
+    // Dash, collapse-push, and the 0.15s consecutive-hit protection all
+    // block damage. invincibleTimer is checked directly (not just the
+    // isInvincible flag) so protection set mid-frame works immediately.
+    if (this.isInvincible || this.invincibleTimer > 0) {
       // Evaded attack during dash!
       return;
     }
@@ -451,6 +494,10 @@ export class PlayerCharacter {
     this.dashCooldownRemaining = 0;
     this.dashDurationRemaining = 0;
     this.isInvincible = false;
+    this.invincibleTimer = 0;
+    this.discardStacks = 3;
+    this.discardRecharge = 0;
+    this.externalSpeedMult = 1.0;
     this.slowTimer = 0;
     this.hitFlashTimer = 0;
     this.knockbackX = 0;

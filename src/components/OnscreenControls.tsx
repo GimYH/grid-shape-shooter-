@@ -124,13 +124,13 @@ export const OnscreenControls: React.FC<OnscreenControlsProps> = ({ engine }) =>
               </span>
             </button>
 
-            {/* Discard Button (Fast 0.7s Reload) */}
+            {/* Discard Button (3-stack magazine, 0.45s refill) */}
             <button
               onClick={() => engine.handlePlayerDiscard(1)}
               className="w-14 h-14 rounded-full bg-purple-500/25 hover:bg-purple-500/40 border border-purple-400/80 flex flex-col items-center justify-center text-purple-300 shadow-lg shadow-purple-950/50 active:scale-95 transition-all cursor-pointer"
             >
               <Trash2 className="w-5 h-5" />
-              <span className="text-[9px] font-bold mt-0.5">[X] FLUSH</span>
+              <span className="text-[9px] font-bold mt-0.5">[X] FLUSH {engine.player.discardStacks}/3</span>
             </button>
 
             {/* Skill Button */}
