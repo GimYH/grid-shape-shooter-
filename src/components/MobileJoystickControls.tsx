@@ -6,6 +6,8 @@ interface MobileJoystickControlsProps {
   engine: GameEngine;
   /** Bottom edge of the 16:9 stage container, in px from the viewport top. */
   stageBottom: number;
+  /** Px the stage + band are shifted up by the scroll-down button. */
+  shift?: number;
 }
 
 // Joystick deadzone on stick deflection (matches the gamepad 0.3 style
@@ -27,6 +29,7 @@ const JOYSTICK_DEADZONE = 0.15;
 export const MobileJoystickControls: React.FC<MobileJoystickControlsProps> = ({
   engine,
   stageBottom,
+  shift = 0,
 }) => {
   const bandRef = React.useRef<HTMLDivElement | null>(null);
   const [bandHeight, setBandHeight] = React.useState(0);
@@ -123,7 +126,7 @@ export const MobileJoystickControls: React.FC<MobileJoystickControlsProps> = ({
     <div
       ref={bandRef}
       className="absolute left-0 right-0 z-20 select-none font-['Chakra_Petch']"
-      style={{ top: stageBottom, bottom: 0, touchAction: 'none' }}
+      style={{ top: stageBottom - shift, bottom: shift, touchAction: 'none' }}
     >
       {/* Hint line */}
       <div className="absolute top-1 left-0 right-0 text-center pointer-events-none">
