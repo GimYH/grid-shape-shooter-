@@ -71,8 +71,23 @@ export default function App() {
     () => typeof window !== 'undefined' && window.innerHeight > window.innerWidth
   );
   const [stageBottom, setStageBottom] = useState(0);
+  // Temporary portrait scroll-down: on phones the 100vh container can be
+  // taller than the visible viewport (browser toolbar), so the joystick
+  // band's bottom is clipped and the page can't scroll (overflow-hidden).
+  // The button shifts the stage + band up by the hidden amount.
+  const [scrollShift, setScrollShift] = useState(0);
+  const [scrollOverflow, setScrollOverflow] = useState(0);
 
   useEffect(() => {
+    const measureOverflow = () => {
+      const containerH =
+        containerRef.current?.getBoundingClientRect().height ?? window.innerHeight;
+      const visibleH = window.visualViewport?.height ?? window.innerHeight;
+      const overflow = Math.max(0, Math.round(containerH - visibleH));
+      setScrollOverflow(overflow);
+      if (overflow === 0) setScrollShift(0);
+    };
+
     const handleResize = () => {
       if (!containerRef.current) return;
       const windowW = window.innerWidth;
@@ -86,16 +101,25 @@ export default function App() {
       const nextScale = Math.min(scaleX, scaleY);
       setScale(nextScale);
       setIsPortrait(windowH > windowW);
+      if (windowH <= windowW) setScrollShift(0);
+      measureOverflow();
     };
 
     handleResize();
     window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    window.visualViewport?.addEventListener('resize', measureOverflow);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.visualViewport?.removeEventListener('resize', measureOverflow);
+    };
   }, []);
 
   // Measure the stage container's actual position (transform-aware) so
   // the mobile controls sit in the real letterbox band below it.
+  // Skip while shifted: getBoundingClientRect would return the shifted
+  // bottom and feed back into the band position.
   useEffect(() => {
+    if (scrollShift > 0) return;
     const measure = () => {
       if (stageRef.current) {
         setStageBottom(stageRef.current.getBoundingClientRect().bottom);
@@ -108,7 +132,12 @@ export default function App() {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', measure);
     };
-  }, [scale, isPortrait, gameStatus]);
+  }, [scale, isPortrait, gameStatus, scrollShift]);
+
+  // A stale shift must never offset the title screen or result modals.
+  useEffect(() => {
+    if (gameStatus !== 'playing' && gameStatus !== 'paused') setScrollShift(0);
+  }, [gameStatus]);
 
   const handleSelectMode = (mode: GameMode) => {
     setSelectedMode(mode);
@@ -197,7 +226,7 @@ export default function App() {
         style={{
           width: '1920px',
           height: '1080px',
-          transform: `scale(${scale})`,
+          transform: `translateY(${-scrollShift}px) scale(${scale})`,
           transformOrigin: 'center center',
           flexShrink: 0,
         }}
@@ -320,7 +349,28 @@ export default function App() {
         engineRef.current &&
         isPortrait &&
         stageBottom > 0 && (
-          <MobileJoystickControls engine={engineRef.current} stageBottom={stageBottom} />
+          <MobileJoystickControls
+            engine={engineRef.current}
+            stageBottom={stageBottom}
+            shift={scrollShift}
+          />
+        )}
+
+      {/* Temporary portrait scroll-down button: shown only when the
+          joystick band is actually clipped below the visible fold.
+          Tapping shifts the stage + band up so the controls come into
+          view; tapping again restores the layout. */}
+      {(gameStatus === 'playing' || gameStatus === 'paused') &&
+        isPortrait &&
+        scrollOverflow > 20 && (
+          <button
+            onClick={() => setScrollShift((s) => (s > 0 ? 0 : scrollOverflow))}
+            className="absolute top-2 left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded-full bg-slate-900/85 border border-cyan-400/60 text-cyan-300 text-sm font-bold tracking-wide shadow-lg active:scale-95 transition-all cursor-pointer font-['Chakra_Petch']"
+            style={{ touchAction: 'manipulation' }}
+            aria-label={scrollShift > 0 ? '위로 스크롤' : '아래로 스크롤'}
+          >
+            {scrollShift > 0 ? '위로 ↑' : '아래로 ↓'}
+          </button>
         )}
     </div>
   );
