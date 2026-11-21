@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { GameStats } from '../types/game';
+import { DefeatCause, GameStats } from '../types/game';
 import { loadCampaignProgress, formatClearTime } from '../game/campaign';
 import { RotateCcw, Trophy, Skull, Zap, Swords } from 'lucide-react';
 
@@ -9,11 +9,16 @@ interface GameOverModalProps {
   // GRID ROYALE (v2.4): final rank (1 = winner). When set, the restart
   // button is hidden — a royale game has no rematch, only a new room.
   rank?: number | null;
+  // v2.2 Phase 2: how the battle was lost (defeat only).
+  defeatCause?: DefeatCause | null;
+  // v2.2 Phase 2: online rematch votes so far (0-2), shown when > 0.
+  rematchVotes?: number;
+  isOnline?: boolean;
   onRestart: () => void;
   onReturnToTitle: () => void;
 }
 
-export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, rank, onRestart, onReturnToTitle }) => {
+export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, rank, defeatCause, rematchVotes, isOnline, onRestart, onReturnToTitle }) => {
   const isVictory = status === 'victory';
   // v2.3: a career no-continue badge, if one was ever earned.
   const noContinue = useMemo(
@@ -54,6 +59,24 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, ran
             ? '상대 진영을 격파하고 그리드 지배권을 확보했습니다.'
             : '플레이어 HP가 소진되었습니다. 다시 도전하거나 전술을 재정비하세요.'}
         </p>
+
+        {/* v2.2 Phase 2: defeat cause */}
+        {!isVictory && defeatCause && (
+          <div className="w-full mb-4 px-3 py-2 rounded-2xl bg-rose-500/15 border border-rose-400/60 text-rose-300 text-sm font-bold break-keep">
+            {defeatCause === 'KO'
+              ? '격추 패배 — 캐릭터 HP 소진'
+              : defeatCause === 'CORE DESTROYED'
+                ? '코어 파괴 패배 — 후방 코어 소진'
+                : '연결 끊김 — 상대와 연결이 끊겼습니다'}
+          </div>
+        )}
+
+        {/* v2.2 Phase 2: online rematch vote */}
+        {isOnline && (rematchVotes ?? 0) > 0 && (
+          <div className="w-full mb-4 px-3 py-2 rounded-2xl bg-cyan-500/15 border border-cyan-400/60 text-cyan-300 text-sm font-bold break-keep">
+            재경기 투표 {rematchVotes}/2 — 상대의 선택을 기다리는 중…
+          </div>
+        )}
 
         {/* v2.3: no-continue badge (career record) */}
         {isVictory && noContinue && (

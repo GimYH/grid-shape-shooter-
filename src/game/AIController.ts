@@ -308,6 +308,8 @@ export class AIController {
 
   public hp: number = 100;
   public maxHp: number = 100;
+  // v2.2 Phase 2: diegetic HP bar residual (see PlayerCharacter.displayHp).
+  public displayHp: number = 100;
   // Monochrome absorb shield (mirrors the player rule: +10 per absorbed
   // non-red cluster, cap 40).
   public shield: number = 0;
@@ -376,6 +378,7 @@ export class AIController {
 
     this.maxHp = cfg.hp;
     this.hp = cfg.hp;
+    this.displayHp = cfg.hp;
     this.shield = 0;
     this.overdriveActive = false;
     this.awakened = false;
@@ -434,6 +437,12 @@ export class AIController {
     if (this.hitFlashTimer > 0) this.hitFlashTimer = Math.max(0, this.hitFlashTimer - dt);
     if (this.slowTimer > 0) this.slowTimer = Math.max(0, this.slowTimer - dt);
     if (this.invincibleTimer > 0) this.invincibleTimer = Math.max(0, this.invincibleTimer - dt);
+    // v2.2 Phase 2: red residual bar eases down toward real HP (45 HP/s).
+    if (this.displayHp > this.hp) {
+      this.displayHp = Math.max(this.hp, this.displayHp - dt * 45);
+    } else {
+      this.displayHp = this.hp;
+    }
     this.decisionTimer -= dt;
     this.launchCooldown = Math.max(0, this.launchCooldown - dt);
     for (const k of Object.keys(this.skillCooldowns) as ArchetypeId[]) {

@@ -124,6 +124,30 @@ export const CharacterSelectModal: React.FC<CharacterSelectModalProps> = ({
                     {arch.title}
                   </p>
 
+                  {/* v2.2 Phase 2: stat bars (화력/기동/수비, 5 segments each) */}
+                  <div className="mt-2 space-y-1">
+                    {(
+                      [
+                        ['화력', arch.stats.firepower],
+                        ['기동', arch.stats.mobility],
+                        ['수비', arch.stats.defense],
+                      ] as const
+                    ).map(([label, value]) => (
+                      <div key={label} className="flex items-center gap-1.5">
+                        <span className="text-[9px] text-slate-400 w-6 shrink-0">{label}</span>
+                        <div className="flex gap-0.5 flex-1">
+                          {[1, 2, 3, 4, 5].map((i) => (
+                            <span
+                              key={i}
+                              className="h-1.5 flex-1 rounded-full"
+                              style={{ backgroundColor: i <= value ? arch.color : '#1E293B' }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
                   <div className="mt-2.5 pt-2 border-t border-slate-800 flex items-center justify-between text-[10px]">
                     <span className="text-slate-400">Skill CD:</span>
                     <span className="font-mono font-bold text-amber-300">

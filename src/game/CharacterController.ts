@@ -14,6 +14,9 @@ export class PlayerCharacter {
   public hp: number = 100;
   public maxHp: number = 100;
   public shield: number = 0;
+  // v2.2 Phase 2: diegetic HP bar residual — the red ghost bar eases
+  // toward hp after damage (snaps up instantly on heals).
+  public displayHp: number = 100;
 
   public archetypeId: ArchetypeId = 'lancer';
   public skillCooldownRemaining: number = 0;
@@ -150,6 +153,13 @@ export class PlayerCharacter {
     // Update timers
     if (this.skillCooldownRemaining > 0) {
       this.skillCooldownRemaining = Math.max(0, this.skillCooldownRemaining - dt);
+    }
+    // v2.2 Phase 2: the red residual bar on the diegetic HP bar eases
+    // down toward real HP (45 HP/s); heals snap it up at once.
+    if (this.displayHp > this.hp) {
+      this.displayHp = Math.max(this.hp, this.displayHp - dt * 45);
+    } else {
+      this.displayHp = this.hp;
     }
     if (this.dashCooldownRemaining > 0) {
       this.dashCooldownRemaining = Math.max(0, this.dashCooldownRemaining - dt);
@@ -524,6 +534,7 @@ export class PlayerCharacter {
     this.vx = 0;
     this.vy = 0;
     this.hp = 100;
+    this.displayHp = 100;
     this.shield = 0;
     this.skillCooldownRemaining = 0;
     this.dashCooldownRemaining = 0;

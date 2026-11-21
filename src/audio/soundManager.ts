@@ -5,15 +5,39 @@
 class SoundManager {
   private ctx: AudioContext | null = null;
   private muted: boolean = false;
+  // v2.2 Phase 2: master SFX volume (0..1, default 0.8) behind one gain
+  // node so the pause-menu slider scales every effect at once.
+  private masterGain: GainNode | null = null;
+  private volume: number = 0.8;
 
   private initCtx() {
     if (!this.ctx && typeof window !== 'undefined') {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new AudioCtx();
+      this.masterGain = this.ctx.createGain();
+      this.masterGain.gain.value = this.volume;
+      this.masterGain.connect(this.ctx.destination);
     }
     if (this.ctx && this.ctx.state === 'suspended') {
       this.ctx.resume().catch(() => {});
     }
+  }
+
+  // Every effect routes through the master gain (falls back to the raw
+  // destination before the context exists).
+  private dest(): AudioNode {
+    return this.masterGain ?? this.ctx!.destination;
+  }
+
+  public setVolume(v: number) {
+    this.volume = Math.max(0, Math.min(1, v));
+    if (this.masterGain && this.ctx) {
+      this.masterGain.gain.setValueAtTime(this.volume, this.ctx.currentTime);
+    }
+  }
+
+  public getVolume(): number {
+    return this.volume;
   }
 
   public setMuted(mute: boolean) {
@@ -57,7 +81,7 @@ class SoundManager {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
 
     osc.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(this.dest());
 
     osc.start(now);
     osc.stop(now + 0.32);
@@ -92,7 +116,7 @@ class SoundManager {
 
     noise.connect(filter);
     filter.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(this.dest());
 
     noise.start(now);
   }
@@ -117,7 +141,7 @@ class SoundManager {
     gain.gain.exponentialRampToValueAtTime(0.001, now + (isDirect ? 0.26 : 0.16));
 
     osc.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(this.dest());
 
     osc.start(now);
     osc.stop(now + 0.28);
@@ -152,7 +176,7 @@ class SoundManager {
 
     osc1.connect(gain);
     osc2.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(this.dest());
 
     osc1.start(now);
     osc2.start(now);
@@ -178,7 +202,7 @@ class SoundManager {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
 
     osc.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(this.dest());
 
     osc.start(now);
     osc.stop(now + 0.07);
@@ -202,7 +226,7 @@ class SoundManager {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
 
     osc.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(this.dest());
 
     osc.start(now);
     osc.stop(now + 0.15);
@@ -226,7 +250,7 @@ class SoundManager {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
 
     osc.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(this.dest());
 
     osc.start(now);
     osc.stop(now + 0.14);
@@ -251,7 +275,7 @@ class SoundManager {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
 
     osc.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(this.dest());
 
     osc.start(now);
     osc.stop(now + 0.22);
@@ -276,10 +300,60 @@ class SoundManager {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
 
     osc.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(this.dest());
 
     osc.start(now);
     osc.stop(now + 0.56);
+  }
+
+  // Skill ready: a clear two-note chime when a cooldown finishes.
+  public playSkillReady() {
+    if (this.muted) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    const notes = [880, 1318.5];
+    notes.forEach((freq, idx) => {
+      const now = this.ctx!.currentTime + idx * 0.09;
+      const osc = this.ctx!.createOscillator();
+      const gain = this.ctx!.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now);
+
+      gain.gain.setValueAtTime(0.16, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+
+      osc.connect(gain);
+      gain.connect(this.dest());
+
+      osc.start(now);
+      osc.stop(now + 0.22);
+    });
+  }
+
+  // Rejected input: a low buzz for a failed launch / cooldown / empty stack.
+  public playReject() {
+    if (this.muted) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(110, now);
+    osc.frequency.exponentialRampToValueAtTime(85, now + 0.12);
+
+    gain.gain.setValueAtTime(0.12, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
+
+    osc.connect(gain);
+    gain.connect(this.dest());
+
+    osc.start(now);
+    osc.stop(now + 0.14);
   }
 
   // Stage Clear Sound
@@ -301,7 +375,7 @@ class SoundManager {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
 
       osc.connect(gain);
-      gain.connect(this.ctx!.destination);
+      gain.connect(this.dest());
 
       osc.start(now);
       osc.stop(now + 0.28);
@@ -327,7 +401,7 @@ class SoundManager {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
 
       osc.connect(gain);
-      gain.connect(this.ctx!.destination);
+      gain.connect(this.dest());
 
       osc.start(now);
       osc.stop(now + 0.38);
@@ -353,7 +427,7 @@ class SoundManager {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
 
       osc.connect(gain);
-      gain.connect(this.ctx!.destination);
+      gain.connect(this.dest());
 
       osc.start(now);
       osc.stop(now + 0.32);

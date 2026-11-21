@@ -13,6 +13,7 @@ import { GodotExportModal } from './components/GodotExportModal';
 import { OnscreenControls } from './components/OnscreenControls';
 import { MobileJoystickControls } from './components/MobileJoystickControls';
 import { ArchetypeId, GameMode } from './types/game';
+import { soundManager } from './audio/soundManager';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -30,6 +31,13 @@ export default function App() {
   const [onlineModalMode, setOnlineModalMode] = useState<'duel' | 'royale'>('duel');
   const [initialRoomCode, setInitialRoomCode] = useState<string>('');
   const [, setTick] = useState(0);
+
+  // v2.2 Phase 2: pause-menu SFX volume + shake toggle (mirrored from the
+  // engine's saved settings whenever the pause modal opens).
+  const [sfxVolume, setSfxVolume] = useState(0.8);
+  const [shakeOn, setShakeOn] = useState(true);
+  // v2.2 Phase 2: result modals lock input for 0.6s after appearing.
+  const resultShownAtRef = useRef(0);
 
   // Check URL query parameters for invite link ?room=CODE[&mode=royale]
   useEffect(() => {
@@ -74,6 +82,10 @@ export default function App() {
   const [isPortrait, setIsPortrait] = useState<boolean>(
     () => typeof window !== 'undefined' && window.innerHeight > window.innerWidth
   );
+  // v2.2 Phase 2: touch pads only on coarse-pointer devices.
+  const [isCoarsePointer, setIsCoarsePointer] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+  );
   const [stageBottom, setStageBottom] = useState(0);
   // Temporary portrait scroll-down: on phones the 100vh container can be
   // taller than the visible viewport (browser toolbar), so the joystick
@@ -105,6 +117,7 @@ export default function App() {
       const nextScale = Math.min(scaleX, scaleY);
       setScale(nextScale);
       setIsPortrait(windowH > windowW);
+      setIsCoarsePointer(window.matchMedia('(pointer: coarse)').matches);
       if (windowH <= windowW) setScrollShift(0);
       measureOverflow();
     };
@@ -140,7 +153,65 @@ export default function App() {
 
   // A stale shift must never offset the title screen or result modals.
   useEffect(() => {
-    if (gameStatus !== 'playing' && gameStatus !== 'paused') setScrollShift(0);
+    if (gameStatus !== 'playing' && gameStatus !== 'paused' && gameStatus !== 'slowmo') setScrollShift(0);
+  }, [gameStatus]);
+
+  // v2.2 Phase 2: mirror the engine's saved settings into the pause menu.
+  useEffect(() => {
+    if (gameStatus === 'paused' && engineRef.current) {
+      setSfxVolume(soundManager.getVolume());
+      setShakeOn(engineRef.current.shakeEnabled);
+    }
+  }, [gameStatus]);
+
+  // v2.2 Phase 2: result modals lock input for 0.6s after appearing.
+  useEffect(() => {
+    if (gameStatus === 'victory' || gameStatus === 'defeat' || gameStatus === 'stage_clear') {
+      resultShownAtRef.current = performance.now();
+    }
+  }, [gameStatus]);
+
+  // v2.2 Phase 2: result-screen + pause shortcuts. [R] restarts on
+  // defeat (and from pause); [Space] advances on victory/stage_clear.
+  // The 0.6s lock above stops a stray key from skipping the modal.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (gameStatus === 'paused') {
+        if (e.code === 'KeyR') {
+          engineRef.current?.restartCurrentBattle();
+          setGameStatus(engineRef.current?.status ?? 'playing');
+        }
+        return;
+      }
+      if (gameStatus === 'victory' || gameStatus === 'defeat' || gameStatus === 'stage_clear') {
+        if (performance.now() - resultShownAtRef.current < 600) return;
+        if (e.code === 'KeyR' && gameStatus === 'defeat') {
+          engineRef.current?.restartCurrentBattle();
+          setGameStatus(engineRef.current?.status ?? 'playing');
+          return;
+        }
+        if (e.code === 'Space') {
+          e.preventDefault();
+          if (gameStatus === 'stage_clear') {
+            engineRef.current?.advanceToNextStage();
+            setStageNum(engineRef.current?.currentStage || 1);
+            setGameStatus('playing');
+          } else if (gameStatus === 'victory') {
+            const eng = engineRef.current;
+            if (eng && eng.mode === 'single' && eng.currentStage < 30) {
+              eng.advanceToNextStage();
+              setStageNum(eng.currentStage || 1);
+              setGameStatus('playing');
+            } else {
+              eng?.restartCurrentBattle();
+              setGameStatus(eng?.status ?? 'playing');
+            }
+          }
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, [gameStatus]);
 
   const handleSelectMode = (mode: GameMode) => {
@@ -222,6 +293,17 @@ export default function App() {
     }
   };
 
+  // v2.2 Phase 2: pause-menu SFX volume + shake toggle handlers.
+  const handleVolumeChange = (v: number) => {
+    setSfxVolume(v);
+    engineRef.current?.setSfxVolume(v);
+  };
+
+  const handleToggleShake = () => {
+    engineRef.current?.toggleShake();
+    setShakeOn(engineRef.current?.shakeEnabled ?? true);
+  };
+
   const handleReturnToTitle = () => {
     if (engineRef.current) {
       engineRef.current.returnToTitle();
@@ -297,7 +379,7 @@ export default function App() {
         />
 
         {/* Active HUD & In-Game UI */}
-        {(gameStatus === 'playing' || gameStatus === 'paused') && engineRef.current && (
+        {(gameStatus === 'playing' || gameStatus === 'paused' || gameStatus === 'slowmo') && engineRef.current && (
           <>
             {engineRef.current.mode === 'royale' ? (
               <RoyaleHUD
@@ -316,24 +398,70 @@ export default function App() {
               />
             )}
             {/* Virtual Controls for Touch Screens (landscape/tablet only;
-                portrait uses the joystick controls below the stage) */}
-            {!isPortrait && <OnscreenControls engine={engineRef.current} />}
+                portrait uses the joystick controls below the stage).
+                v2.2 Phase 2: only on coarse-pointer devices — a desktop
+                landscape window no longer gets the touch pads. */}
+            {!isPortrait && isCoarsePointer && <OnscreenControls engine={engineRef.current} />}
           </>
         )}
 
-        {/* Pause Overlay */}
+        {/* Pause Overlay (v2.2 Phase 2: visual keymap + SFX volume +
+            shake toggle + restart) */}
         {gameStatus === 'paused' && (
           <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm z-30 flex flex-col items-center justify-center font-['Chakra_Petch']">
             <h2 className="text-4xl font-black text-cyan-400 tracking-widest uppercase mb-4">
               SIMULATION PAUSED
             </h2>
-            <p className="text-slate-300 text-sm mb-6">Press [Esc] or [P] to resume operation</p>
+            <p className="text-slate-300 text-sm mb-5">Press [Esc] or [P] to resume operation</p>
+            {/* Visual keymap */}
+            <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-sm text-slate-300 mb-5 bg-slate-900/80 border border-slate-800 rounded-2xl px-5 py-4 break-keep">
+              <span><b className="text-white">WASD / 방향키</b> 이동</span>
+              <span><b className="text-white">SPACE</b> 발사</span>
+              <span><b className="text-white">Q / Ctrl</b> 스킬</span>
+              <span><b className="text-white">Shift</b> 대시</span>
+              <span><b className="text-white">X / E</b> 디스카드</span>
+              <span><b className="text-white">1~7</b> 직업 전환</span>
+              <span><b className="text-white">ESC / P</b> 일시정지</span>
+              <span><b className="text-white">R</b> 재시작</span>
+            </div>
+            {/* SFX volume + shake toggle */}
+            <div className="flex items-center gap-6 mb-6">
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                SFX 볼륨
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={Math.round(sfxVolume * 100)}
+                  onChange={(e) => handleVolumeChange(Number(e.target.value) / 100)}
+                  className="w-32 accent-cyan-400 cursor-pointer"
+                  aria-label="SFX 볼륨"
+                />
+                <span className="w-10 text-right tabular-nums text-slate-200">{Math.round(sfxVolume * 100)}%</span>
+              </label>
+              <button
+                onClick={handleToggleShake}
+                className={`px-3 py-1.5 rounded-full text-xs font-bold border cursor-pointer transition-colors ${
+                  shakeOn
+                    ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-300'
+                    : 'bg-slate-800 border-slate-600 text-slate-400'
+                }`}
+              >
+                화면 흔들림 {shakeOn ? 'ON' : 'OFF'}
+              </button>
+            </div>
             <div className="flex gap-4">
               <button
                 onClick={handleTogglePause}
                 className="px-6 py-2.5 rounded-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold uppercase cursor-pointer"
               >
                 Resume
+              </button>
+              <button
+                onClick={handleRestart}
+                className="px-6 py-2.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold cursor-pointer"
+              >
+                Restart (R)
               </button>
               <button
                 onClick={handleReturnToTitle}
@@ -363,6 +491,9 @@ export default function App() {
             status={gameStatus}
             stats={engineRef.current.stats}
             rank={engineRef.current.mode === 'royale' ? engineRef.current.royaleRank : null}
+            defeatCause={engineRef.current.defeatCause}
+            rematchVotes={engineRef.current.rematchVotes}
+            isOnline={engineRef.current.isOnline}
             onRestart={handleRestart}
             onReturnToTitle={handleReturnToTitle}
           />
@@ -379,7 +510,7 @@ export default function App() {
           stage container, in the letterbox band below the stage, so the
           buttons stay full-size on a phone. Portrait only; landscape and
           desktop keep the keyboard + OnscreenControls above. */}
-      {(gameStatus === 'playing' || gameStatus === 'paused') &&
+      {(gameStatus === 'playing' || gameStatus === 'paused' || gameStatus === 'slowmo') &&
         engineRef.current &&
         isPortrait &&
         stageBottom > 0 && (
@@ -394,7 +525,7 @@ export default function App() {
           joystick band is actually clipped below the visible fold.
           Tapping shifts the stage + band up so the controls come into
           view; tapping again restores the layout. */}
-      {(gameStatus === 'playing' || gameStatus === 'paused') &&
+      {(gameStatus === 'playing' || gameStatus === 'paused' || gameStatus === 'slowmo') &&
         isPortrait &&
         scrollOverflow > 20 && (
           <button

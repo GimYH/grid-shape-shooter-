@@ -55,3 +55,14 @@
 .press-soft:active {
   transform: scale(0.96);
 }
+
+/* v2.2 Phase 2: rejection flash — a 3px side-to-side shake for a skill /
+   dash / discard icon pressed on cooldown (or with an empty magazine). */
+@keyframes reject-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+.reject-shake {
+  animation: reject-shake 0.3s ease-in-out;
+}

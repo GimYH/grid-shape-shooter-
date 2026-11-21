@@ -41,6 +41,13 @@ export class NetworkManager {
   public opponentReady: boolean = false;
   public opponentArchetype: ArchetypeId = 'wave';
 
+  // v2.2 Phase 2: live round-trip time (ms) from the 10s heartbeat pong.
+  // The server echoes the ping timestamp, so RTT = now - timestamp.
+  public pingMs: number | null = null;
+  // v2.2 Phase 2: rematch vote count (server 'rematch_update', 0-2).
+  public rematchVotes: number = 0;
+  public onRematchUpdate?: (votes: number) => void;
+
   // Callbacks
   public onRoomCreated?: (roomCode: string) => void;
   public onRoomJoined?: (roomCode: string, opponentArchetype?: ArchetypeId) => void;
@@ -155,6 +162,16 @@ export class NetworkManager {
   private handleMessage(msg: Record<string, unknown>) {
     switch (msg.type) {
       case 'pong': {
+        // v2.2 Phase 2: the server echoes the ping timestamp — measure RTT.
+        const sent = typeof msg.timestamp === 'number' ? msg.timestamp : 0;
+        this.pingMs = sent > 0 ? Math.max(0, Date.now() - sent) : null;
+        break;
+      }
+      case 'rematch_update': {
+        // v2.2 Phase 2: how many players asked for a rematch (0-2).
+        const votes = typeof msg.votes === 'number' ? msg.votes : 0;
+        this.rematchVotes = votes;
+        if (this.onRematchUpdate) this.onRematchUpdate(votes);
         break;
       }
       case 'room_created': {

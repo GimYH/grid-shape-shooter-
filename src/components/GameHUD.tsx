@@ -71,6 +71,14 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     return () => clearInterval(id);
   }, []);
 
+  // v2.2 Phase 2: rejection flash — the icon of a skill/dash/discard
+  // pressed on cooldown (or with an empty magazine) flashes red for 0.3s.
+  const rejectFlash = (kind: 'skill' | 'dash' | 'discard', playerNum: 1 | 2) =>
+    !!engine.rejectFlash &&
+    engine.rejectFlash.kind === kind &&
+    engine.rejectFlash.playerNum === playerNum &&
+    performance.now() < engine.rejectFlash.until;
+
   // Cluster currently under player
   const currentCluster = engine.playerBoard.getClusterAt(player.currentCol, player.currentRow);
   const currentCluster2 = isLocal2P && player2 ? engine.enemyBoard.getClusterAt(player2.currentCol, player2.currentRow) : null;
@@ -157,8 +165,14 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     </div>
   );
 
-  const discardCard = (stacks: number, recharge: number, keys: string) => (
-    <div className="mt-2 pt-1.5 border-t border-slate-800/80 flex items-center justify-between bg-cyan-950/20 px-2 py-1 rounded-full border border-cyan-800/40">
+  const discardCard = (stacks: number, recharge: number, keys: string, playerNum: 1 | 2 = 1) => (
+    <div
+      className={`mt-2 pt-1.5 border-t border-slate-800/80 flex items-center justify-between bg-cyan-950/20 px-2 py-1 rounded-full border ${
+        rejectFlash('discard', playerNum)
+          ? 'reject-shake ring-2 ring-red-500 bg-red-950/50 border-red-500'
+          : 'border-cyan-800/40'
+      }`}
+    >
       <div className="flex items-center gap-1.5 text-[11px] text-cyan-300 font-bold">
         <Trash2 className="w-3 h-3 text-cyan-400" />
         <span>[{keys}] 타일 버리기</span>
@@ -185,9 +199,14 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     cur: number,
     max: number,
     ready: boolean,
-    percent: number
+    percent: number,
+    flash: boolean = false
   ) => (
-    <div className="mt-2 pt-2 border-t border-slate-800/80">
+    <div
+      className={`mt-2 pt-2 border-t border-slate-800/80 rounded-xl px-1 ${
+        flash ? 'reject-shake ring-2 ring-red-500 bg-red-950/50' : ''
+      }`}
+    >
       <div className="flex justify-between items-center text-xs mb-1">
         <span className="font-bold flex items-center gap-1.5 text-slate-200 text-[11px]">
           <Zap className="w-3.5 h-3.5 text-amber-400" />
@@ -212,8 +231,12 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     </div>
   );
 
-  const dashCard = (char: typeof player, keys: string) => (
-    <div className="mt-2 pt-2 border-t border-slate-800/80">
+  const dashCard = (char: typeof player, keys: string, playerNum: 1 | 2 = 1) => (
+    <div
+      className={`mt-2 pt-2 border-t border-slate-800/80 rounded-xl px-1 ${
+        rejectFlash('dash', playerNum) ? 'reject-shake ring-2 ring-red-500 bg-red-950/50' : ''
+      }`}
+    >
       <div className="flex justify-between items-center text-xs mb-1">
         <span className="font-bold flex items-center gap-1.5 text-slate-200 text-[11px]">
           <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
@@ -389,6 +412,15 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           </>
         )}
 
+        {engine.isOnline && networkManager.pingMs != null && (
+          <>
+            <div className="h-4 w-px bg-slate-700" />
+            <span className="text-[11px] font-mono font-bold text-emerald-300 whitespace-nowrap tabular-nums">
+              핑 {networkManager.pingMs}ms
+            </span>
+          </>
+        )}
+
         <div className="h-4 w-px bg-slate-700" />
 
         <button
@@ -468,9 +500,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             </p>
           </div>
 
-          {skillCard(currentArchetype.skillName, 'Q/K', curCD, maxCD, skillReady, cdPercent)}
-          {dashCard(player, 'Shift/C')}
-          {discardCard(player.discardStacks, player.discardRecharge, 'X/E/L')}
+          {skillCard(currentArchetype.skillName, 'Q/K', curCD, maxCD, skillReady, cdPercent, rejectFlash('skill', 1))}
+          {dashCard(player, 'Shift/C', 1)}
+          {discardCard(player.discardStacks, player.discardRecharge, 'X/E/L', 1)}
         </div>
 
         {clusterPreview(currentCluster, player.currentCol, player.currentRow)}
@@ -586,9 +618,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 </p>
               </div>
               {p2Archetype &&
-                skillCard(p2Archetype.skillName, 'Ctrl우', p2CurCD, p2MaxCD, p2SkillReady, p2CdPercent)}
-              {dashCard(player2, 'Shift우')}
-              {discardCard(player2.discardStacks, player2.discardRecharge, '/')}
+                skillCard(p2Archetype.skillName, 'Ctrl우', p2CurCD, p2MaxCD, p2SkillReady, p2CdPercent, rejectFlash('skill', 2))}
+              {dashCard(player2, 'Shift우', 2)}
+              {discardCard(player2.discardStacks, player2.discardRecharge, '/', 2)}
             </div>
 
             {clusterPreview(currentCluster2, player2.currentCol, player2.currentRow)}

@@ -16,7 +16,9 @@ export class ProjectileManager {
   private overcharged = new Set<string>();
   // v2.2: called when a clash is won; GameEngine reduces the launcher's
   // skill cooldown by 1.0s and counts clashesWon.
-  public onClashWin: ((winnerOwner: 'player' | 'enemy') => void) | null = null;
+  // v2.2 Phase 2: winnerCells = the winning projectile's launch size —
+  // a 6+ cell clash win fires a 35ms micro-hitstop (GameEngine side).
+  public onClashWin: ((winnerOwner: 'player' | 'enemy', winnerCells?: number) => void) | null = null;
 
   public createProjectile(
     owner: 'player' | 'enemy',
@@ -292,12 +294,12 @@ export class ProjectileManager {
               if (pCell.hp > 0 && eCell.hp <= 0 && pProj.cells.length >= 3 && !this.overcharged.has(pProj.id)) {
                 this.overcharged.add(pProj.id);
                 pProj.vy *= 1.4;
-                this.onClashWin?.('player');
+                this.onClashWin?.('player', pProj.cells.length);
               }
               if (eCell.hp > 0 && pCell.hp <= 0 && eProj.cells.length >= 3 && !this.overcharged.has(eProj.id)) {
                 this.overcharged.add(eProj.id);
                 eProj.vy *= 1.4;
-                this.onClashWin?.('enemy');
+                this.onClashWin?.('enemy', eProj.cells.length);
               }
 
               particleSystem.addShockwave(clashX, clashY, 45, '#FFFFFF');

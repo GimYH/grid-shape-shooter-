@@ -3,9 +3,10 @@ import { PlayerCharacter } from './CharacterController';
 import { AIController } from './AIController';
 import { ProjectileManager } from './ProjectileManager';
 import { ParticleSystem } from './ParticleSystem';
-import { ARCHETYPES } from './archetypes';
+import { ARCHETYPES, ARCHETYPE_LIST } from './archetypes';
 import { STAGES, SECTOR_THEMES } from './stages';
-import { CoreState, ShrinkPhase, ShrinkRect, TileColor } from '../types/game';
+import { ArchetypeId, CoreState, ShrinkPhase, ShrinkRect, TileColor } from '../types/game';
+import { ARCHETYPE_PORTRAITS } from '../assets/portraits';
 
 // Boss skill cycle colors for the OMNI-OVERLORD core (7 skills: Crimson,
 // Tide, Beam, Chroma, Overdrive, Quantum Rewrite, Phase Blink).
@@ -34,11 +35,27 @@ export class CanvasRenderer {
   // start; the background tints by sector, even stages and boss stages.
   public stageId: number = 1;
 
+  // v2.2 Phase 2: rejection shake target (set by GameEngine.render each
+  // frame; null when no tile is shaking).
+  public rejectTile: { owner: 'player' | 'enemy'; col: number; row: number; until: number } | null = null;
+
+  // v2.2 Phase 2: preloaded portraits for the cut-in overlay.
+  private portraitImages = new Map<ArchetypeId, HTMLImageElement>();
+
   constructor() {
     const totalGridW = GRID_COLS * this.cellW + (GRID_COLS - 1) * this.gap;
     // Center grids horizontally in the 1920 canvas
     this.enemyOriginX = Math.round((this.canvasWidth - totalGridW) / 2);
     this.playerOriginX = this.enemyOriginX;
+    // Preload the cut-in portraits (data URLs; the first draw may miss
+    // while they load, later cut-ins hit the cache).
+    if (typeof window !== 'undefined') {
+      for (const arch of ARCHETYPE_LIST) {
+        const img = new Image();
+        img.src = ARCHETYPE_PORTRAITS[arch.id];
+        this.portraitImages.set(arch.id, img);
+      }
+    }
   }
 
   public render(
@@ -58,7 +75,8 @@ export class CanvasRenderer {
     shrinkRect2?: ShrinkRect | null,
     shrinkPhase?: ShrinkPhase,
     isRoyale?: boolean,
-    portalWarnings?: { col: number; until: number }[]
+    portalWarnings?: { col: number; until: number }[],
+    cutin?: { portrait: ArchetypeId; label: string; until: number; durationMs: number } | null
   ) {
     ctx.save();
 
@@ -126,6 +144,64 @@ export class CanvasRenderer {
     // 9. Floating Combat Text
     this.renderFloatingTexts(ctx, particleSystem);
 
+    // 10. Portrait cut-in (skill cast / combo 7+ / boss awakening).
+    if (cutin) this.renderCutin(ctx, cutin);
+
+    ctx.restore();
+  }
+
+  // v2.2 Phase 2: portrait cut-in at the right end of the neutral zone
+  // (the only free canvas strip: the DOM cockpits cover both outer edges).
+  // Slides in from the right, holds, then fades in the last 0.3s.
+  private renderCutin(
+    ctx: CanvasRenderingContext2D,
+    cutin: { portrait: ArchetypeId; label: string; until: number; durationMs: number }
+  ) {
+    const img = this.portraitImages.get(cutin.portrait);
+    if (!img || !img.complete || img.naturalWidth === 0) return;
+    const remaining = cutin.until - performance.now();
+    if (remaining <= 0) return;
+    const elapsed = Math.max(0, cutin.durationMs - remaining);
+    const slideIn = Math.min(1, elapsed / 250);
+    const fadeOut = Math.min(1, remaining / 300);
+    const alpha = Math.min(slideIn, fadeOut);
+    const size = 130;
+    // Right end of the neutral zone; the DOM right cockpit starts at
+    // x=1484, so the portrait (130px) parks at 1342..1472.
+    const x = 1342 + (1 - slideIn) * 60;
+    const y = this.neutralZoneY + this.neutralZoneHeight / 2 - size / 2;
+    const color = ARCHETYPES[cutin.portrait]?.color ?? '#FFFFFF';
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 24;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    this.drawRoundedRect(ctx, x, y, size, size, 16);
+    ctx.fillStyle = '#0B0F1A';
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.save();
+    this.drawRoundedRect(ctx, x, y, size, size, 16);
+    ctx.clip();
+    ctx.drawImage(img, x, y, size, size);
+    ctx.restore();
+    // Label pill under the portrait.
+    ctx.font = '700 15px "Chakra Petch", monospace';
+    ctx.textAlign = 'center';
+    const label = cutin.label;
+    const lw = ctx.measureText(label).width + 24;
+    const ly = y + size + 8;
+    ctx.fillStyle = 'rgba(3, 6, 12, 0.85)';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    this.drawRoundedRect(ctx, x + size / 2 - lw / 2, ly, lw, 26, 13);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillText(label, x + size / 2, ly + 18);
     ctx.restore();
   }
 
@@ -356,6 +432,13 @@ export class CanvasRenderer {
       this.drawRoundedRect(ctx, x + 2, y + 2, (w - 4) * frac, h - 4, 4);
       ctx.fill();
     }
+    // v2.2 Phase 2: 50% collapse tick — the line the bar must not cross.
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x + w / 2, y + 2);
+    ctx.lineTo(x + w / 2, y + h - 2);
+    ctx.stroke();
     // Crack lines
     if (core.crack >= 1) {
       ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
@@ -448,12 +531,42 @@ export class CanvasRenderer {
       originY - 18
     );
 
+    // v2.2 Phase 2: frontline glow — the boundary of the front 2 rows
+    // (player rows 0-1, enemy rows 3-4) where the x1.25/x1.15 bonus applies.
+    {
+      const rowStep = this.cellH + this.gap;
+      const frontY =
+        owner === 'player'
+          ? originY + 2 * rowStep - this.gap / 2
+          : originY + 3 * rowStep - this.gap / 2;
+      ctx.save();
+      ctx.strokeStyle = owner === 'player' ? 'rgba(0, 255, 170, 0.5)' : 'rgba(255, 51, 102, 0.5)';
+      ctx.shadowColor = owner === 'player' ? '#00FFAA' : '#FF3366';
+      ctx.shadowBlur = 8;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(originX, frontY);
+      ctx.lineTo(originX + totalW, frontY);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // Render individual tiles
     for (let r = 0; r < GRID_ROWS; r++) {
       for (let c = 0; c < GRID_COLS; c++) {
         const tile = board.tiles[r][c];
-        const tx = originX + c * (this.cellW + this.gap);
+        let tx = originX + c * (this.cellW + this.gap);
         const ty = originY + r * (this.cellH + this.gap);
+        // v2.2 Phase 2: rejected launch — the tile shakes 3px side to side.
+        if (
+          this.rejectTile &&
+          this.rejectTile.owner === owner &&
+          this.rejectTile.col === c &&
+          this.rejectTile.row === r &&
+          performance.now() < this.rejectTile.until
+        ) {
+          tx += Math.sin(performance.now() / 16) * 3;
+        }
 
         // Find if this tile belongs to an active cluster
         const cluster = board.getClusterAt(c, r);
@@ -628,6 +741,28 @@ export class CanvasRenderer {
     ctx.fill();
     ctx.restore();
 
+    // v2.2 Phase 2: colorblind symbol — low-alpha geometry at tile
+    // center (red triangle, blue square, yellow circle).
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+    const scx = x + w / 2;
+    const scy = y + h / 2;
+    if (color === 'red') {
+      ctx.beginPath();
+      ctx.moveTo(scx, scy - 8);
+      ctx.lineTo(scx + 8, scy + 6);
+      ctx.lineTo(scx - 8, scy + 6);
+      ctx.closePath();
+      ctx.fill();
+    } else if (color === 'blue') {
+      ctx.fillRect(scx - 7, scy - 7, 14, 14);
+    } else {
+      ctx.beginPath();
+      ctx.arc(scx, scy, 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
     // Inner neon highlight for active pads
     if (isActivePad) {
       ctx.strokeStyle = `rgba(255, 255, 255, ${0.4 * pulse})`;
@@ -721,6 +856,48 @@ export class CanvasRenderer {
           ctx.stroke();
         }
       }
+
+      // v2.2 Phase 2: cluster size number at the centroid.
+      const cx = cluster.tiles.reduce((a, t) => a + originX + t.col * (this.cellW + this.gap) + this.cellW / 2, 0) / cluster.tiles.length;
+      const cy = cluster.tiles.reduce((a, t) => a + originY + t.row * (this.cellH + this.gap) + this.cellH / 2, 0) / cluster.tiles.length;
+      ctx.save();
+      ctx.font = '700 13px "Chakra Petch", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(3, 6, 12, 0.85)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, 11, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = hex;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillText(String(cluster.tiles.length), cx, cy + 4.5);
+      ctx.restore();
+
+      // v2.2 Phase 2: launch-lane rail — a faint vertical dotted line over
+      // each of the cluster's columns (upward for the player board,
+      // downward for the enemy board) so the firing line is visible.
+      const cols = [...new Set(cluster.tiles.map((t) => t.col))];
+      for (const col of cols) {
+        const colCx = originX + col * (this.cellW + this.gap) + this.cellW / 2;
+        const rows = cluster.tiles.filter((t) => t.col === col).map((t) => t.row);
+        const minRow = Math.min(...rows);
+        const maxRow = Math.max(...rows);
+        ctx.save();
+        ctx.strokeStyle = `${hex}2E`;
+        ctx.setLineDash([4, 6]);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        if (board.owner === 'player') {
+          ctx.moveTo(colCx, originY);
+          ctx.lineTo(colCx, originY + minRow * (this.cellH + this.gap));
+        } else {
+          ctx.moveTo(colCx, originY + (maxRow + 1) * (this.cellH + this.gap) - this.gap);
+          ctx.lineTo(colCx, originY + GRID_ROWS * (this.cellH + this.gap) - this.gap);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
     }
   }
 
@@ -788,6 +965,91 @@ export class CanvasRenderer {
 
       ctx.restore();
     }
+  }
+
+  // v2.2 Phase 2: diegetic character HUD — 48x6 HP bar (+30px below the
+  // fighter, flips to -32px above on the edge row), 25 HP tick marks, a
+  // red residual bar that eases toward real HP, a white shield overlay,
+  // discard pips, and a yellow wavy ring while slowed.
+  private renderCharacterHud(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    radius: number,
+    hp: number,
+    maxHp: number,
+    displayHp: number,
+    shield: number,
+    discardStacks: number | null,
+    slowTimer: number,
+    time: number,
+    flip: boolean,
+    hpColor: string
+  ) {
+    const barW = 48;
+    const barH = 6;
+    const barY = flip ? y - 32 - barH : y + 30;
+    const frac = Math.max(0, Math.min(1, hp / maxHp));
+    const dispFrac = Math.max(0, Math.min(1, displayHp / maxHp));
+
+    ctx.save();
+    // Bar background
+    ctx.fillStyle = 'rgba(3, 6, 12, 0.85)';
+    this.drawRoundedRect(ctx, x - barW / 2, barY, barW, barH, 3);
+    ctx.fill();
+    // Red residual (damage ghost) + live HP on top
+    if (dispFrac > 0) {
+      ctx.fillStyle = 'rgba(255, 68, 85, 0.9)';
+      this.drawRoundedRect(ctx, x - barW / 2, barY, barW * dispFrac, barH, 3);
+      ctx.fill();
+    }
+    if (frac > 0) {
+      ctx.fillStyle = hpColor;
+      this.drawRoundedRect(ctx, x - barW / 2, barY, barW * frac, barH, 3);
+      ctx.fill();
+    }
+    // 25 HP tick marks
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.lineWidth = 1;
+    for (const t of [0.25, 0.5, 0.75]) {
+      const tx = x - barW / 2 + barW * t;
+      ctx.beginPath();
+      ctx.moveTo(tx, barY);
+      ctx.lineTo(tx, barY + barH);
+      ctx.stroke();
+    }
+    // Shield: white overlay on the bar
+    if (shield > 0) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+      const sw = barW * Math.min(1, shield / 100);
+      this.drawRoundedRect(ctx, x - barW / 2, barY, sw, barH, 3);
+      ctx.fill();
+    }
+    // Discard pips (3 x 4px dots under the bar)
+    if (discardStacks !== null) {
+      const pipY = flip ? barY - 10 : barY + barH + 6;
+      for (let i = 0; i < 3; i++) {
+        ctx.fillStyle = i < discardStacks ? '#00FFAA' : 'rgba(100, 116, 139, 0.6)';
+        ctx.beginPath();
+        ctx.arc(x - 9 + i * 9, pipY, 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    // Yellow slow wave ring
+    if (slowTimer > 0) {
+      ctx.strokeStyle = 'rgba(255, 204, 0, 0.75)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let a = 0; a <= Math.PI * 2 + 0.01; a += Math.PI / 16) {
+        const r = radius + 14 + Math.sin(a * 3 + time * 10) * 2.5;
+        const px = x + Math.cos(a) * r;
+        const py = y + Math.sin(a) * r;
+        if (a === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   private renderPlayer(
@@ -900,6 +1162,15 @@ export class CanvasRenderer {
       ctx.fill();
     }
     ctx.restore();
+
+    // v2.2 Phase 2: diegetic HP bar + discard pips + slow wave.
+    this.renderCharacterHud(
+      ctx, player.x, player.y, R,
+      player.hp, player.maxHp, player.displayHp, player.shield,
+      player.discardStacks, player.slowTimer, time,
+      player.isPlayer2 ? player.currentRow === 0 : player.currentRow === GRID_ROWS - 1,
+      player.isPlayer2 ? '#F87171' : '#34D399'
+    );
   }
 
   // v2.2 signature vector shapes. Every shape points UP (-Y) in local
@@ -1355,6 +1626,15 @@ export class CanvasRenderer {
       ctx.setLineDash([]);
     }
     ctx.restore();
+
+    // v2.2 Phase 2: diegetic HP bar (no discard pips for the AI).
+    this.renderCharacterHud(
+      ctx, enemy.x, enemy.y, R,
+      enemy.hp, enemy.maxHp, enemy.displayHp, enemy.shield,
+      null, enemy.slowTimer, time,
+      enemy.currentRow === 0,
+      '#F87171'
+    );
   }
 
   private renderLasers(ctx: CanvasRenderingContext2D, particleSystem: ParticleSystem) {
