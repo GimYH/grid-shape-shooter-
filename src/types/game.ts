@@ -124,7 +124,7 @@ export interface Shockwave {
   alpha: number;
 }
 
-export type GameMode = 'single' | 'multi' | 'boss' | 'royale';
+export type GameMode = 'single' | 'multi' | 'boss' | 'royale' | 'arcade';
 
 export type AiLevel = 1 | 2 | 3 | 4 | 5;
 

@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { GameEngine, GameStatus } from './game/GameEngine';
 import { GameHUD } from './components/GameHUD';
+import { ArcadeHUD } from './components/ArcadeHUD';
 import { RoyaleHUD } from './components/RoyaleHUD';
 import { RoyalePlayerInfo } from './game/royale';
+import { ArcadeModeId } from './game/arcade';
 import { TitleScreen } from './components/TitleScreen';
 import { GameOverModal } from './components/GameOverModal';
 import { StageClearModal } from './components/StageClearModal';
@@ -14,6 +16,7 @@ import { OnscreenControls } from './components/OnscreenControls';
 import { MobileJoystickControls } from './components/MobileJoystickControls';
 import { ArchetypeId, GameMode } from './types/game';
 import { soundManager } from './audio/soundManager';
+import { EffectQuality } from './game/ParticleSystem';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -36,6 +39,8 @@ export default function App() {
   // engine's saved settings whenever the pause modal opens).
   const [sfxVolume, setSfxVolume] = useState(0.8);
   const [shakeOn, setShakeOn] = useState(true);
+  // Optimization (2.1): pause-menu effect quality (same mirroring).
+  const [effectQuality, setEffectQuality] = useState<EffectQuality>('medium');
   // v2.2 Phase 2: result modals lock input for 0.6s after appearing.
   const resultShownAtRef = useRef(0);
 
@@ -161,6 +166,7 @@ export default function App() {
     if (gameStatus === 'paused' && engineRef.current) {
       setSfxVolume(soundManager.getVolume());
       setShakeOn(engineRef.current.shakeEnabled);
+      setEffectQuality(engineRef.current.effectQuality);
     }
   }, [gameStatus]);
 
@@ -223,6 +229,13 @@ export default function App() {
     }
     setStageNum(mode === 'boss' ? 30 : 1);
     setShowCharSelect(true);
+  };
+
+  // ARCADE: 아키타입 선택을 거치지 않고 표준 기체로 바로 진입한다.
+  const handleSelectArcade = (mode: ArcadeModeId) => {
+    setSelectedMode('arcade');
+    engineRef.current?.startArcade(mode);
+    setGameStatus('playing');
   };
 
   const handleSelectStage = (stage: number) => {
@@ -304,6 +317,13 @@ export default function App() {
     setShakeOn(engineRef.current?.shakeEnabled ?? true);
   };
 
+  // Optimization (2.1): pause-menu effect quality — applies immediately
+  // (engine updates the particle pool) and persists via saveSettings.
+  const handleEffectQuality = (q: EffectQuality) => {
+    engineRef.current?.setEffectQuality(q);
+    setEffectQuality(engineRef.current?.effectQuality ?? q);
+  };
+
   const handleReturnToTitle = () => {
     if (engineRef.current) {
       engineRef.current.returnToTitle();
@@ -340,6 +360,7 @@ export default function App() {
         {gameStatus === 'title' && (
           <TitleScreen
             onSelectMode={handleSelectMode}
+            onSelectArcade={handleSelectArcade}
             onOpenOnlineModal={() => {
               setOnlineModalMode('duel');
               setShowOnlineModal(true);
@@ -388,6 +409,14 @@ export default function App() {
                 onRestart={handleRestart}
                 onReturnToTitle={handleReturnToTitle}
               />
+            ) : engineRef.current.mode === 'arcade' ? (
+              <ArcadeHUD
+                engine={engineRef.current}
+                onOpenGodotModal={() => setShowGodotModal(true)}
+                onTogglePause={handleTogglePause}
+                onRestart={handleRestart}
+                onReturnToTitle={handleReturnToTitle}
+              />
             ) : (
               <GameHUD
                 engine={engineRef.current}
@@ -417,12 +446,19 @@ export default function App() {
             <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-sm text-slate-300 mb-5 bg-slate-900/80 border border-slate-800 rounded-2xl px-5 py-4 break-keep">
               <span><b className="text-white">WASD / 방향키</b> 이동</span>
               <span><b className="text-white">SPACE</b> 발사</span>
-              <span><b className="text-white">Q / Ctrl</b> 스킬</span>
+              {engineRef.current?.mode !== 'arcade' && (
+                <span><b className="text-white">Q / Ctrl</b> 스킬</span>
+              )}
               <span><b className="text-white">Shift</b> 대시</span>
               <span><b className="text-white">X / E</b> 디스카드</span>
-              <span><b className="text-white">1~7</b> 직업 전환</span>
+              {engineRef.current?.mode !== 'arcade' && (
+                <span><b className="text-white">1~7</b> 직업 전환</span>
+              )}
               <span><b className="text-white">ESC / P</b> 일시정지</span>
               <span><b className="text-white">R</b> 재시작</span>
+              {engineRef.current?.mode === 'arcade' && (
+                <span className="text-slate-400">표준 기체: 스킬·직업 전환 없음</span>
+              )}
             </div>
             {/* SFX volume + shake toggle */}
             <div className="flex items-center gap-6 mb-6">
@@ -449,6 +485,34 @@ export default function App() {
               >
                 화면 흔들림 {shakeOn ? 'ON' : 'OFF'}
               </button>
+            </div>
+            {/* Optimization (2.1): effect quality — high 240 / medium 120
+                (default) / low 50 particles. Applies immediately and is
+                saved with the other settings. */}
+            <div className="flex items-center gap-3 mb-6">
+              <span className="text-sm text-slate-300">이펙트 품질</span>
+              {(
+                [
+                  { id: 'high', label: '높음' },
+                  { id: 'medium', label: '보통' },
+                  { id: 'low', label: '낮음' },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => handleEffectQuality(opt.id)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-bold border cursor-pointer transition-colors ${
+                    effectQuality === opt.id
+                      ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-300'
+                      : 'bg-slate-800 border-slate-600 text-slate-400'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+              {engineRef.current?.particleSystem.autoDegraded && (
+                <span className="text-xs text-amber-300">프레임 저하로 자동 절전 중</span>
+              )}
             </div>
             <div className="flex gap-4">
               <button
@@ -494,6 +558,7 @@ export default function App() {
             defeatCause={engineRef.current.defeatCause}
             rematchVotes={engineRef.current.rematchVotes}
             isOnline={engineRef.current.isOnline}
+            arcade={engineRef.current.mode === 'arcade' ? engineRef.current.arcadeResult : null}
             onRestart={handleRestart}
             onReturnToTitle={handleReturnToTitle}
           />

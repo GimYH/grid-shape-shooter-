@@ -1,12 +1,13 @@
-import { GridBoard, BoardSnapshot, GRID_COLS, GRID_ROWS } from './GridEngine';
+import { GridBoard, BoardSnapshot, GRID_COLS, GRID_ROWS, TILE_COLORS } from './GridEngine';
 import { PlayerCharacter } from './CharacterController';
 import { AIController } from './AIController';
 import { ProjectileManager } from './ProjectileManager';
-import { ParticleSystem } from './ParticleSystem';
+import { ParticleSystem, EffectQuality } from './ParticleSystem';
+import { FrameDefense } from './frameDefense';
 import { CanvasRenderer } from './Renderer';
 import { soundManager } from '../audio/soundManager';
-import { ArchetypeId, Cluster, CoreState, DefeatCause, GameMode, GameStats, ShrinkPhase, ShrinkRect, SkillEffect } from '../types/game';
-import { ARCHETYPES } from './archetypes';
+import { ArchetypeId, Cluster, CoreState, DefeatCause, GameMode, GameStats, ShapeProjectile, ShrinkPhase, ShrinkRect, SkillEffect } from '../types/game';
+import { ARCHETYPES, MONOCHROME_SHIELD_MAX, SPEEDSTER_FIRE_DMG_MULT, SPEEDSTER_FIRE_SPEED_MULT, TRANSPORTER_SWAP_DMG_MULT } from './archetypes';
 import { STAGES } from './stages';
 import {
   startCampaignRun,
@@ -33,6 +34,48 @@ import {
   RoyaleStatusPacket,
   RoyaleTargetMode,
 } from './royale';
+import {
+  ArcadeModeId,
+  ArcadeMeteor,
+  ArcadeRecords,
+  ArcadeRenderState,
+  ArcadeResult,
+  DEFENSE_COLLAPSE_REFILL_MULT,
+  DEFENSE_CORE_DMG_PER_HP,
+  METEOR_TOUCH_DMG,
+  MEGA_BARRIER_MULT,
+  MEGA_GROGGY_MULT,
+  MEGA_GROGGY_SEC,
+  MEGA_LASER_DMG,
+  MEGA_LASER_MAX_COLS,
+  MEGA_LASER_MIN_COLS,
+  MEGA_LASER_TELEGRAPH_SEC,
+  MEGA_ORDER_SEC,
+  MEGA_BOSS_MAX_HP,
+  METEOR_CELL_HP,
+  RUSH_BASE_SCORE,
+  RUSH_BONUS_SEC,
+  RUSH_GOAL_Y,
+  RUSH_START_SEC,
+  RushMission,
+  WeaknessOrder,
+  comboMultFor,
+  counterColorOf,
+  defenseWaveFor,
+  formatArcadeTime,
+  loadArcadeRecords,
+  matchesMission,
+  matchesWeakness,
+  meteorFallSpeed,
+  meteorRemainingHp,
+  meteorSizeForRoll,
+  meteorSpawnIntervalSec,
+  randomRushMission,
+  randomWeaknessOrder,
+  recordDefenseRun,
+  recordMegaClear,
+  recordRushRun,
+} from './arcade';
 
 export type GameStatus =
   | 'title'
@@ -100,6 +143,17 @@ export function sniperCoreDamageMult(archetypeId: string | undefined, cellCount:
   return archetypeId === 'sniper' && cellCount <= 2 ? 0.5 : 1;
 }
 
+// v2.2 balance: a sniper 1-2 cell snipe neither raises the combo count nor
+// refreshes the 4s combo timer. 3+ clusters and the piercing beam (isBeam)
+// still count. Damage itself is unaffected — only the combo bookkeeping.
+export function countsForCombo(
+  archetypeId: string | undefined,
+  cellCount: number,
+  isBeam?: boolean
+): boolean {
+  return !(archetypeId === 'sniper' && cellCount <= 2 && !isBeam);
+}
+
 export class GameEngine {
   public canvas: HTMLCanvasElement | null = null;
   public ctx: CanvasRenderingContext2D | null = null;
@@ -161,6 +215,10 @@ export class GameEngine {
   public defeatCause: DefeatCause | null = null;
   // v2.2 Phase 2: settings (localStorage 'gss_settings_v1').
   public shakeEnabled: boolean = true;
+  // Optimization (2.1): effect quality (localStorage 'gss_settings_v1').
+  public effectQuality: EffectQuality = 'medium';
+  // Optimization (2.2): automatic frame defense (60-frame FPS watch).
+  private frameDefense = new FrameDefense();
   // v2.2 Phase 2: online rematch vote state (server 'rematch_update').
   public rematchVotes: number = 0;
   public rematchRequested: boolean = false;
@@ -182,13 +240,18 @@ export class GameEngine {
   }
 
   // v2.2 Phase 2: load/save SFX volume + shake toggle.
+  // Optimization (2.1): effect quality rides in the same record.
   private loadSettings() {
     try {
       const raw = localStorage.getItem('gss_settings_v1');
       if (!raw) return;
-      const s = JSON.parse(raw) as { volume?: unknown; shakeEnabled?: unknown };
+      const s = JSON.parse(raw) as { volume?: unknown; shakeEnabled?: unknown; effectQuality?: unknown };
       if (typeof s.volume === 'number') soundManager.setVolume(s.volume);
       if (typeof s.shakeEnabled === 'boolean') this.shakeEnabled = s.shakeEnabled;
+      if (s.effectQuality === 'high' || s.effectQuality === 'medium' || s.effectQuality === 'low') {
+        this.effectQuality = s.effectQuality;
+        this.particleSystem.setQuality(s.effectQuality);
+      }
     } catch {
       // Corrupt settings: keep defaults.
     }
@@ -198,7 +261,11 @@ export class GameEngine {
     try {
       localStorage.setItem(
         'gss_settings_v1',
-        JSON.stringify({ volume: soundManager.getVolume(), shakeEnabled: this.shakeEnabled })
+        JSON.stringify({
+          volume: soundManager.getVolume(),
+          shakeEnabled: this.shakeEnabled,
+          effectQuality: this.effectQuality,
+        })
       );
     } catch {
       // Storage unavailable: settings stay in memory only.
@@ -214,6 +281,15 @@ export class GameEngine {
 
   public setSfxVolume(v: number) {
     soundManager.setVolume(v);
+    this.saveSettings();
+    this.triggerStateUpdate();
+  }
+
+  // Optimization (2.1): pause-menu effect quality — applies immediately
+  // to the particle pool and persists in gss_settings_v1.
+  public setEffectQuality(q: EffectQuality) {
+    this.effectQuality = q;
+    this.particleSystem.setQuality(q);
     this.saveSettings();
     this.triggerStateUpdate();
   }
@@ -296,6 +372,40 @@ export class GameEngine {
   // How many alive players currently target me (gang-up compensation).
   public royaleTargetedByCount: number = 0;
 
+  // --- ARCADE 3종 (메가 보스 / 오더 러시 / 코어 디펜스) --------------------
+  // mode === 'arcade'일 때만 동작. 기존 모드와는 상태가 완전히 분리된다.
+  public arcadeMode: ArcadeModeId | null = null;
+  public arcadeRecords: ArcadeRecords = loadArcadeRecords();
+  public arcadeResult: ArcadeResult | null = null;
+  public get isArcade(): boolean {
+    return this.mode === 'arcade';
+  }
+  // 메가 보스: 상단 적 보드 자리에 있는 초대형 보스.
+  public megaBossHp: number = MEGA_BOSS_MAX_HP;
+  public megaBarrier: boolean = true;
+  public megaGroggyUntil: number = 0; // gameTime 기준
+  public megaOrder: WeaknessOrder | null = null;
+  public megaOrderDeadline: number = 0; // gameTime 기준
+  public megaOrderSuccess: number = 0;
+  public megaOrderFail: number = 0;
+  public megaLaserCols: number[] = [];
+  public megaLaserFireAt: number = 0; // gameTime 기준
+  public megaLaserArmed: boolean = false;
+  // 오더 러시: 60초 미션 타임어택.
+  public rushTimeLeft: number = RUSH_START_SEC;
+  public rushScore: number = 0;
+  public rushCombo: number = 0;
+  public rushComboMax: number = 0;
+  public rushOrdersDone: number = 0;
+  public rushMissions: RushMission[] = [];
+  private rushCounted: Set<string> = new Set();
+  // 코어 디펜스: 상단에서 하강하는 운석.
+  public defenseMeteors: ArcadeMeteor[] = [];
+  public defenseSpawnTimer: number = 0;
+  public defenseWave: number = 1;
+  public defenseDestroyed: number = 0;
+  private defenseOvercharged: Set<string> = new Set();
+
   private animationFrameId: number | null = null;
   private lastTime: number = 0;
   private onStateChangeCallback?: () => void;
@@ -362,6 +472,10 @@ export class GameEngine {
     this.wasSkillReady = true;
     this.wasSkillReady2 = true;
     this.awakeningCutinShown = false;
+    // Optimization (2.2): each battle starts at full particle quality;
+    // the frame defense re-latches only if this battle actually runs slow.
+    this.frameDefense.reset();
+    this.particleSystem.setAutoDegraded(false);
   }
 
   // v2.2 Phase 2: decisive-moment slow motion. The battle keeps running
@@ -381,7 +495,9 @@ export class GameEngine {
   // every battle start (and from the constructor for the title screen).
   private resetCores() {
     const enemyCoreHp =
-      this.mode === 'multi' || this.mode === 'royale' ? 250 : STAGES[this.currentStage - 1].coreHp;
+      this.mode === 'multi' || this.mode === 'royale' || this.mode === 'arcade'
+        ? 250
+        : STAGES[this.currentStage - 1].coreHp;
     this.playerCore = { hp: 250, maxHp: 250, collapsed: false, crack: 0 };
     this.enemyCore = { hp: enemyCoreHp, maxHp: enemyCoreHp, collapsed: false, crack: 0 };
     this.shrinkPhase = 'idle';
@@ -821,6 +937,7 @@ export class GameEngine {
     this.boardSyncPending = false;
     this.peerDisconnectHandled = false;
     this.resetRoyaleState();
+    this.arcadeMode = null;
     this.mode = mode;
     this.status = 'playing';
     this.gameTime = 0;
@@ -926,6 +1043,7 @@ export class GameEngine {
     this.boardSyncPending = false;
     this.peerDisconnectHandled = false;
     this.resetRoyaleState();
+    this.arcadeMode = null;
     this.comboCount = 0;
     this.comboTimer = 0;
     this.comboMax = 0;
@@ -1020,6 +1138,7 @@ export class GameEngine {
     this.boardSyncPending = false;
     this.peerDisconnectHandled = false;
     this.resetRoyaleState();
+    this.arcadeMode = null;
     this.royalePlayers = players.map((p) => ({ ...p, targetingIds: [...p.targetingIds] }));
     this.royaleMyId = myId;
     this.royaleAliveCount = this.royalePlayers.filter((p) => p.alive).length;
@@ -1073,6 +1192,144 @@ export class GameEngine {
     const label = mode === 'random' ? '무작위' : mode === 'ko' ? '마무리' : mode === 'counter' ? '카운터' : '선두';
     this.particleSystem.addFloatingText(this.player.x, this.player.y - 40, `타겟: ${label}`, '#FFD166', 16);
     this.triggerStateUpdate();
+  }
+
+  // --- ARCADE 3종 ------------------------------------------------------------
+  // 타이틀 아케이드 탭에서 직접 진입한다. 아키타입 선택을 거치지 않고
+  // 표준 기체(랜서 외형, 패시브 없음)로 고정된다. AI 적·온라인·수축 존·
+  // 후방 코어(메가/러시)는 동작하지 않는다.
+  public startArcade(mode: ArcadeModeId) {
+    this.isOnline = false;
+    this.onlineRole = 'p1';
+    this.onlineRoomCode = null;
+    this.networkSyncTimer = 0;
+    this.boardSyncTimer = 0;
+    this.boardHashStreak = 0;
+    this.boardSyncPending = false;
+    this.peerDisconnectHandled = false;
+    this.resetRoyaleState();
+    this.mode = 'arcade';
+    this.arcadeMode = mode;
+    this.currentStage = 1;
+    this.status = 'playing';
+    this.gameTime = 0;
+    this.battleStartAt = performance.now();
+    this.pauseAccum = 0;
+    this.pausedAt = 0;
+    this.beginBattle();
+    this.campaignRun = null;
+    this.lastNoContinue = null;
+    this.renderer.stageId = 1;
+    this.comboCount = 0;
+    this.comboTimer = 0;
+    this.comboMax = 0;
+    this.combo2Count = 0;
+    this.combo2Timer = 0;
+    this.combo2Max = 0;
+    this.resetCores();
+
+    this.stats = {
+      damageDealt: 0,
+      damageTaken: 0,
+      shapesLaunched: 0,
+      tilesDiscarded: 0,
+      clashesWon: 0,
+      maxClusterSize: 0,
+      maxCombo: 0,
+      gameDuration: 0,
+      currentStage: 1,
+    };
+
+    this.playerBoard.reset();
+    this.enemyBoard.reset();
+    this.projectileMgr.clear();
+    this.particleSystem.clear();
+    this.resetArcadeState(mode);
+
+    const pStartX = this.renderer.playerOriginX + (GRID_COLS * (this.renderer.cellW + this.renderer.gap)) / 2;
+    const pStartY = this.renderer.playerOriginY + (GRID_ROWS * (this.renderer.cellH + this.renderer.gap)) / 2;
+    this.player.reset(pStartX, pStartY);
+    // 표준 기체: 랜서 외형으로 고정하고, 발사 시 'standard' 아키타입으로
+    // 넘겨 랜서 패시브(스피어 탄속 2배·내구도 +1)가 적용되지 않게 한다.
+    // 스킬은 handlePlayerSkill에서 아케이드 분기로 막는다.
+    this.player.setArchetype('lancer');
+    this.player2 = null;
+
+    // AI 적은 업데이트·렌더링하지 않지만, 호밍 투사체의 조준점(상단
+    // 중앙)과 enemy.isFinalBoss 각성 컷인 가드가 읽는 상태는 안전하게
+    // 세팅해 둔다.
+    const eStartX = this.renderer.enemyOriginX + (GRID_COLS * (this.renderer.cellW + this.renderer.gap)) / 2;
+    const eStartY = this.renderer.enemyOriginY + (GRID_ROWS * (this.renderer.cellH + this.renderer.gap)) / 2;
+    this.enemy.reset(eStartX, eStartY, 1);
+
+    this.arcadeRecords = loadArcadeRecords();
+    this.arcadeResult = null;
+    soundManager.playSwitch();
+    this.triggerStateUpdate();
+  }
+
+  private resetArcadeState(mode: ArcadeModeId) {
+    this.megaBossHp = MEGA_BOSS_MAX_HP;
+    this.megaBarrier = true;
+    this.megaGroggyUntil = 0;
+    this.megaOrder = null;
+    this.megaOrderDeadline = 0;
+    this.megaOrderSuccess = 0;
+    this.megaOrderFail = 0;
+    this.megaLaserCols = [];
+    this.megaLaserFireAt = 0;
+    this.megaLaserArmed = false;
+    this.rushTimeLeft = RUSH_START_SEC;
+    this.rushScore = 0;
+    this.rushCombo = 0;
+    this.rushComboMax = 0;
+    this.rushOrdersDone = 0;
+    this.rushMissions = [
+      randomRushMission(0),
+      randomRushMission(0),
+      randomRushMission(0),
+    ];
+    this.rushCounted.clear();
+    this.defenseMeteors = [];
+    this.defenseSpawnTimer = 1.2;
+    this.defenseWave = 1;
+    this.defenseDestroyed = 0;
+    this.defenseOvercharged.clear();
+    if (mode === 'mega') this.issueMegaOrder();
+  }
+
+  // 메가 보스: 새 약점 지령을 뽑고 7초 제한을 건다. 그로기 중에는
+  // 지령이 없어 타이머가 돌지 않는다 (그로기 종료 시 새로 뽑는다).
+  private issueMegaOrder() {
+    this.megaOrder = randomWeaknessOrder();
+    this.megaOrderDeadline = this.gameTime + MEGA_ORDER_SEC;
+  }
+
+  // 코어 디펜스: 웨이브별 속도·크기·색상으로 운석 1개를 상단에서 생성.
+  private spawnMeteor() {
+    const wave = this.defenseWave;
+    const { w, h } = meteorSizeForRoll(Math.random());
+    const color = TILE_COLORS[Math.floor(Math.random() * TILE_COLORS.length)];
+    const col = Math.floor(Math.random() * (GRID_COLS - w + 1));
+    const stepX = this.renderer.cellW + this.renderer.gap;
+    const stepY = this.renderer.cellH + this.renderer.gap;
+    const cells: ArcadeMeteor['cells'] = [];
+    for (let r = 0; r < h; r++) {
+      for (let c = 0; c < w; c++) {
+        cells.push({ relCol: c, relRow: r, hp: METEOR_CELL_HP, maxHp: METEOR_CELL_HP, destroyed: false });
+      }
+    }
+    this.defenseMeteors.push({
+      id: `meteor_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      col,
+      w,
+      h,
+      x: this.renderer.enemyOriginX + col * stepX,
+      y: this.renderer.enemyOriginY - h * stepY,
+      color,
+      cells,
+      speed: meteorFallSpeed(wave),
+    });
   }
 
   private royaleMyInfo(): RoyalePlayerInfo | undefined {
@@ -1291,6 +1548,8 @@ export class GameEngine {
           overdrive?: boolean;
           painterProc?: boolean;
           frontline?: boolean;
+          dmgMult?: number;
+          speedMult?: number;
           col?: number;
           row?: number;
         };
@@ -1309,7 +1568,7 @@ export class GameEngine {
         };
 
         const originY = this.renderer.enemyOriginY;
-        this.projectileMgr.createProjectile(
+        const remoteProj = this.projectileMgr.createProjectile(
           'enemy',
           mappedCluster,
           this.renderer.enemyOriginX,
@@ -1321,6 +1580,16 @@ export class GameEngine {
           !!d.overdrive,
           !!d.frontline
         );
+        // v2.2 balance: apply the sender's launch buff multipliers verbatim
+        // (transporter swap-link / speedster fire buff) so both sides deal
+        // the exact same damage/speed.
+        if (d.dmgMult && d.dmgMult !== 1) {
+          remoteProj.damagePerCell = Math.round(remoteProj.damagePerCell * d.dmgMult);
+        }
+        if (d.speedMult && d.speedMult !== 1) {
+          remoteProj.vy *= d.speedMult;
+          remoteProj.speedMultiplier *= d.speedMult;
+        }
         this.enemyBoard.launchCluster(mappedCluster);
         // A launched tile can no longer be a held Transporter grab.
         if (
@@ -1366,7 +1635,7 @@ export class GameEngine {
         };
         this.enemyBoard.launchCluster(mapped, 0.5);
         this.player2.shield = Math.min(
-          40,
+          MONOCHROME_SHIELD_MAX,
           this.player2.shield + (typeof d.shieldGain === 'number' ? d.shieldGain : 10)
         );
         this.particleSystem.addFloatingText(this.player2.x, this.player2.y - 30, '+10 SHIELD ABSORBED!', '#33CCFF', 16);
@@ -1694,7 +1963,7 @@ export class GameEngine {
         });
       }
       board.launchCluster(cluster, 0.5);
-      actor.shield = Math.min(40, actor.shield + 10);
+      actor.shield = Math.min(MONOCHROME_SHIELD_MAX, actor.shield + 10);
       soundManager.playSkill('monochrome');
       this.particleSystem.addFloatingText(actor.x, actor.y - 30, '+10 SHIELD ABSORBED!', '#33CCFF', 16);
       this.particleSystem.addShockwave(actor.x, actor.y, 70, '#33CCFF');
@@ -1720,6 +1989,23 @@ export class GameEngine {
 
     const frontline = this.isFrontlineLaunch(ownerStr, cluster);
 
+    // v2.2 balance: transporter swap-link / speedster fire buffs — the
+    // first launch within 1.5s of a swap (transporter) or blink/dash
+    // (speedster) is buffed. Consumed here; the multipliers travel in the
+    // launch packet so the remote side applies the exact same damage/speed
+    // instead of recomputing (its copy of the buff state lags by latency).
+    let buffDmgMult = 1;
+    let buffSpeedMult = 1;
+    if (actor.swapBuffRemaining > 0) {
+      buffDmgMult *= TRANSPORTER_SWAP_DMG_MULT;
+      actor.swapBuffRemaining = 0;
+    }
+    if (actor.speedBuffRemaining > 0) {
+      buffDmgMult *= SPEEDSTER_FIRE_DMG_MULT;
+      buffSpeedMult *= SPEEDSTER_FIRE_SPEED_MULT;
+      actor.speedBuffRemaining = 0;
+    }
+
     if (this.isOnline && broadcast && playerNum === 1) {
       networkManager.sendAction('launch', {
         cluster: {
@@ -1732,6 +2018,8 @@ export class GameEngine {
         overdrive: actor.overdriveActive,
         painterProc,
         frontline,
+        dmgMult: buffDmgMult,
+        speedMult: buffSpeedMult,
         col: actor.currentCol,
         row: actor.currentRow,
       });
@@ -1750,10 +2038,21 @@ export class GameEngine {
       this.renderer.cellW,
       this.renderer.cellH,
       this.renderer.gap,
-      actor.archetypeId,
+      // 아케이드 표준 기체는 'standard'로 넘겨 직업 패시브(랜서 스피어
+      // 강화·웨이브 월 가속·모노크롬 적색 2배 등)가 전혀 붙지 않게 한다.
+      this.isArcade ? 'standard' : actor.archetypeId,
       actor.overdriveActive,
       frontline
     );
+
+    // v2.2 balance: apply the launch buffs computed above.
+    if (buffDmgMult !== 1) {
+      proj.damagePerCell = Math.round(proj.damagePerCell * buffDmgMult);
+    }
+    if (buffSpeedMult !== 1) {
+      proj.vy *= buffSpeedMult;
+      proj.speedMultiplier *= buffSpeedMult;
+    }
 
     // GRID ROYALE: KO damage buff (+10% per KO, max +50%) applies to my
     // launches; the buffed damage is what the portal packet carries.
@@ -1806,6 +2105,12 @@ export class GameEngine {
   // Player Skill
   public handlePlayerSkill(playerNum: 1 | 2 = 1, broadcast: boolean = true, fromBuffer: boolean = false): boolean {
     if (this.status !== 'playing' || this.isCountingDown()) return false;
+
+    // 아케이드 표준 기체는 스킬이 없다. Q/Ctrl 입력은 거부 피드백만 준다.
+    if (this.isArcade) {
+      if (!fromBuffer) this.rejectActionFeedback('skill', playerNum);
+      return false;
+    }
 
     const actor = playerNum === 1 ? this.player : this.player2;
     const board = playerNum === 1 ? this.playerBoard : this.enemyBoard;
@@ -1938,7 +2243,7 @@ export class GameEngine {
     // is a wave core-defense counter.
     if (aiArchs.includes('monochrome') && cluster.color !== 'red' && !bypass) {
       this.enemyBoard.launchCluster(cluster, 0.5);
-      this.enemy.shield = Math.min(40, this.enemy.shield + 10);
+      this.enemy.shield = Math.min(MONOCHROME_SHIELD_MAX, this.enemy.shield + 10);
       soundManager.playSkill('monochrome');
       this.particleSystem.addFloatingText(this.enemy.x, this.enemy.y - 30, '+10 SHIELD ABSORBED!', '#33CCFF', 16);
       this.particleSystem.addShockwave(this.enemy.x, this.enemy.y, 70, '#33CCFF');
@@ -1965,7 +2270,7 @@ export class GameEngine {
     }
 
     const overdrive = this.enemy.isBossOverdrive || this.enemy.overdriveActive;
-    this.projectileMgr.createProjectile(
+    const aiProj = this.projectileMgr.createProjectile(
       'enemy',
       cluster,
       this.renderer.enemyOriginX,
@@ -1977,6 +2282,18 @@ export class GameEngine {
       overdrive,
       this.isFrontlineLaunch('enemy', cluster)
     );
+    // v2.2 balance: consume the AI's launch buffs (transporter swap-link /
+    // speedster blink) on its next launch, same rule as the player.
+    if (this.enemy.swapBuffRemaining > 0) {
+      aiProj.damagePerCell = Math.round(aiProj.damagePerCell * TRANSPORTER_SWAP_DMG_MULT);
+      this.enemy.swapBuffRemaining = 0;
+    }
+    if (this.enemy.speedBuffRemaining > 0) {
+      aiProj.damagePerCell = Math.round(aiProj.damagePerCell * SPEEDSTER_FIRE_DMG_MULT);
+      aiProj.vy *= SPEEDSTER_FIRE_SPEED_MULT;
+      aiProj.speedMultiplier *= SPEEDSTER_FIRE_SPEED_MULT;
+      this.enemy.speedBuffRemaining = 0;
+    }
     this.enemyBoard.launchCluster(cluster);
     // v2.3 painter passive: 10% chance to paint the foot cross dominant.
     if (aiArchs.includes('painter') && Math.random() < 0.1) {
@@ -2000,6 +2317,14 @@ export class GameEngine {
       const dt = Math.min(rawDt, 0.05);
 
       if (this.status === 'playing') {
+        // Optimization (2.2): feed real frame times to the auto frame
+        // defense while the battle runs (countdown included — rendering
+        // still happens). Tab-switch spikes are filtered inside.
+        this.frameDefense.update(rawDt);
+        const degraded = this.frameDefense.degraded;
+        if (degraded !== this.particleSystem.autoDegraded) {
+          this.particleSystem.setAutoDegraded(degraded);
+        }
         // v2.2 Phase 2: the 1.5s start countdown freezes the battle (the
         // canvas still renders the 3-2-1-FIGHT overlay).
         if (this.isCountingDown()) {
@@ -2100,7 +2425,8 @@ export class GameEngine {
     }
 
     // v2.2 90-second shrink zone: warn at 80s, anchor at 90s, then close.
-    if (!this.shrinkWarned && this.gameTime >= 80) {
+    // 아케이드에서는 수축 존이 동작하지 않는다.
+    if (!this.isArcade && !this.shrinkWarned && this.gameTime >= 80) {
       this.shrinkWarned = true;
       this.shrinkPhase = 'warning';
       // 80s warning banner: drawn in the neutral zone (Y 404..636) so it
@@ -2110,10 +2436,10 @@ export class GameEngine {
       this.particleSystem.addFloatingText(960, 500, '10초 후 수축 중심 고정! (전방: 화력 유지 / 후방: 회피 유리)', '#FF4444', 22);
       this.triggerStateUpdate();
     }
-    if (this.shrinkPhase === 'warning' && this.gameTime >= 90) {
+    if (!this.isArcade && this.shrinkPhase === 'warning' && this.gameTime >= 90) {
       this.startShrink();
     }
-    if (this.shrinkPhase === 'shrinking' || this.shrinkPhase === 'closed') {
+    if (!this.isArcade && (this.shrinkPhase === 'shrinking' || this.shrinkPhase === 'closed')) {
       this.updateShrinkRects();
     }
 
@@ -2163,8 +2489,15 @@ export class GameEngine {
       this.mode === 'royale' && this.royaleTargetedByCount >= ROYALE_GANGUP_THRESHOLD
         ? ROYALE_GANGUP_REFILL_MULT
         : 1.0;
+    // 아케이드 코어 디펜스 붕괴 시 리필 가속은 기획서 수치 20%
+    // (DEFENSE_COLLAPSE_REFILL_MULT = 1.2, 기존 모드 1.3이 아님).
+    const collapseRefillMult = this.playerCore.collapsed
+      ? this.isArcade
+        ? DEFENSE_COLLAPSE_REFILL_MULT
+        : 1.3
+      : 1.0;
     const playerCDMult =
-      (this.player.archetypeId === 'speedster' ? 1.5 : 1.0) * (this.playerCore.collapsed ? 1.3 : 1.0) * gangupMult;
+      (this.player.archetypeId === 'speedster' ? 1.5 : 1.0) * collapseRefillMult * gangupMult;
     const isSniper = this.player.archetypeId === 'sniper';
     const playerRefilled = this.playerBoard.update(dt, playerCDMult, isSniper);
 
@@ -2176,11 +2509,15 @@ export class GameEngine {
     // v2.3: offline, the enemy board uses the AI's archetypes (sniper
     // 1-2 cell launches, speedster refill); online/local 2P it uses P2's.
     // Royale has no opponent board on my screen: skip its update.
+    // Arcade too: the top area is the boss / empty / meteor sky.
     const isEnemySniper =
       this.mode === 'multi'
         ? this.player2?.archetypeId === 'sniper'
         : this.enemy.archetypes.includes('sniper');
-    const enemyRefilled = this.mode === 'royale' ? false : this.enemyBoard.update(dt, enemyCDMult, isEnemySniper);
+    const enemyRefilled =
+      this.mode === 'royale' || this.isArcade
+        ? false
+        : this.enemyBoard.update(dt, enemyCDMult, isEnemySniper);
 
     this.refillSoundTimer -= dt;
     if ((playerRefilled || enemyRefilled) && this.refillSoundTimer <= 0) {
@@ -2284,7 +2621,8 @@ export class GameEngine {
           this.enemyBoard,
           true
         );
-      } else {
+      } else if (!this.isArcade) {
+        // 아케이드: AI 적은 움직이지 않는다 (호밍 조준점용 위치만 유지).
         // v2.2: during the 80-90s shrink warning the AI heads for the
         // center so it is not isolated in a corner.
         this.enemy.moveToCenter = this.shrinkPhase === 'warning';
@@ -2322,8 +2660,8 @@ export class GameEngine {
     }
 
     // v2.2 shrink-zone outside-wall damage (after movement, so it reads
-    // the characters' current positions).
-    if (this.shrinkPhase === 'shrinking' || this.shrinkPhase === 'closed') {
+    // the characters' current positions). Arcade has no shrink zone.
+    if (!this.isArcade && (this.shrinkPhase === 'shrinking' || this.shrinkPhase === 'closed')) {
       this.applyShrinkDamage(dt);
     }
 
@@ -2335,6 +2673,11 @@ export class GameEngine {
     // GRID ROYALE: portal warps, pending incoming spawns, warning lines.
     if (this.mode === 'royale') {
       this.updateRoyalePortal();
+    }
+
+    // ARCADE: 모드별 타이머·운석 하강·레이저 발사를 진행한다.
+    if (this.isArcade) {
+      this.updateArcade(dt);
     }
 
     // Combo streak decay timer (4.0s timeout, v2.2)
@@ -2361,8 +2704,13 @@ export class GameEngine {
       }
     }
 
-    // Check Projectile Impacts
-    this.resolveBoardAndCharacterImpacts();
+    // Check Projectile Impacts (아케이드는 전용 판정으로 대체: 보스·
+    // 목표 라인·운석. 적 캐릭터/코어는 존재하지 않는다).
+    if (this.isArcade) {
+      this.resolveArcadeImpacts();
+    } else {
+      this.resolveBoardAndCharacterImpacts();
+    }
 
     // Check Win / Loss condition (v2.2: a destroyed rear core also ends
     // the battle immediately).
@@ -2370,7 +2718,10 @@ export class GameEngine {
     // reported via royale_status; the server answers with royale_ko, which
     // fills in the rank. Victory is decided by the ko broadcast
     // (aliveCount 1), not here.
-    if (this.mode === 'royale') {
+    // ARCADE: 모드별 종료 조건 (보스 격파 / 타이머 종료 / 생존 실패).
+    if (this.isArcade) {
+      this.checkArcadeEnd();
+    } else if (this.mode === 'royale') {
       if (!this.royaleEliminated && (this.player.hp <= 0 || this.playerCore.hp <= 0) && this.status === 'playing') {
         this.royaleEliminated = true;
         this.beginSlowmo('defeat', this.player.hp <= 0 ? 'KO' : 'CORE DESTROYED');
@@ -2458,6 +2809,472 @@ export class GameEngine {
     }
   }
 
+  // --- ARCADE: 모드별 진행·판정·종료 ----------------------------------------
+  // update()에서 매 프레임 호출된다 (수축 존·AI·온라인 코드는 아케이드에서
+  // 이미 분기로 막혀 있다).
+
+  private updateArcade(dt: number) {
+    if (this.arcadeMode === 'mega') {
+      this.updateMegaBoss();
+    } else if (this.arcadeMode === 'rush') {
+      this.rushTimeLeft -= dt;
+      if (this.rushTimeLeft < 0) this.rushTimeLeft = 0;
+    } else if (this.arcadeMode === 'defense') {
+      this.updateDefense(dt);
+    }
+  }
+
+  // 메가 보스: 약점 지령 제한 시간 + 그로기 종료 + 레이저 발사.
+  private updateMegaBoss() {
+    const now = this.gameTime;
+    // 그로기 종료: 배리어 재생성 + 다음 지령.
+    if (!this.megaBarrier && now >= this.megaGroggyUntil) {
+      this.megaBarrier = true;
+      this.issueMegaOrder();
+      this.particleSystem.addFloatingText(960, 300, '배리어 재생성!', '#33CCFF', 18);
+      this.triggerStateUpdate();
+    }
+    // 지령 제한 시간 초과: 레이저 패턴 + 다음 지령.
+    if (this.megaBarrier && this.megaOrder && now >= this.megaOrderDeadline) {
+      this.megaOrderFail++;
+      this.fireMegaLaserTelegraph();
+      this.issueMegaOrder();
+      this.triggerStateUpdate();
+    }
+    // 레이저 발사 시점: 예고된 열에 서 있으면 25 피해 (대시 무적 회피).
+    if (this.megaLaserArmed && now >= this.megaLaserFireAt) {
+      this.megaLaserArmed = false;
+      const cols = this.megaLaserCols;
+      this.megaLaserCols = [];
+      const step = this.renderer.cellW + this.renderer.gap;
+      for (const col of cols) {
+        const x = this.renderer.playerOriginX + col * step + this.renderer.cellW / 2;
+        this.particleSystem.addLaserBeam(
+          x,
+          this.renderer.playerOriginY - 40,
+          x,
+          this.renderer.playerOriginY + GRID_ROWS * step,
+          '#FF2244',
+          22
+        );
+      }
+      soundManager.playHit(false);
+      if (cols.includes(this.player.currentCol)) {
+        const before = this.player.hp;
+        this.player.takeDamage(MEGA_LASER_DMG, true);
+        const dealt = Math.max(0, before - this.player.hp);
+        if (dealt > 0) {
+          this.stats.damageTaken += dealt;
+          this.player.knockbackY = 180;
+          this.hitstopTimer = 0.05;
+          this.screenShake = 0.3;
+          this.particleSystem.addFloatingText(this.player.x, this.player.y - 20, `-${dealt} LASER!`, '#FF2244', 18);
+        }
+      }
+      this.triggerStateUpdate();
+    }
+  }
+
+  // 파훼 실패 시 3~4개 열을 무작위로 골라 1.2초 예고선을 띄운다.
+  private fireMegaLaserTelegraph() {
+    const count =
+      MEGA_LASER_MIN_COLS + Math.floor(Math.random() * (MEGA_LASER_MAX_COLS - MEGA_LASER_MIN_COLS + 1));
+    const cols = new Set<number>();
+    while (cols.size < count) cols.add(Math.floor(Math.random() * GRID_COLS));
+    this.megaLaserCols = [...cols];
+    this.megaLaserFireAt = this.gameTime + MEGA_LASER_TELEGRAPH_SEC;
+    this.megaLaserArmed = true;
+    this.particleSystem.addFloatingText(960, 500, '파훼 실패! 레이저 경고!', '#FF2244', 20);
+    soundManager.playBossWarning();
+  }
+
+  // 코어 디펜스: 웨이브 상승 + 운석 생성 + 하강 + 하단 통과(코어 피해).
+  private updateDefense(dt: number) {
+    this.defenseWave = defenseWaveFor(this.gameTime);
+    this.defenseSpawnTimer -= dt;
+    if (this.defenseSpawnTimer <= 0) {
+      this.defenseSpawnTimer = meteorSpawnIntervalSec(this.defenseWave);
+      this.spawnMeteor();
+    }
+    const stepY = this.renderer.cellH + this.renderer.gap;
+    const boardBottom =
+      this.renderer.playerOriginY + GRID_ROWS * stepY - this.renderer.gap;
+    for (let i = this.defenseMeteors.length - 1; i >= 0; i--) {
+      const m = this.defenseMeteors[i];
+      m.y += m.speed * dt;
+      const meteorBottom = m.y + m.h * stepY - this.renderer.gap;
+      if (meteorBottom > boardBottom) {
+        // 하단 보드를 통과해 뒤로 빠지면 후방 코어 피해 (남은 HP × 5).
+        const remaining = meteorRemainingHp(m);
+        this.defenseMeteors.splice(i, 1);
+        if (remaining > 0) {
+          const dmg = remaining * DEFENSE_CORE_DMG_PER_HP;
+          this.damageCore('player', dmg);
+          this.stats.damageTaken += dmg;
+          this.hitstopTimer = 0.05;
+          this.screenShake = 0.3;
+          this.particleSystem.addFloatingText(
+            this.renderer.playerOriginX + 4 * (this.renderer.cellW + this.renderer.gap) + this.renderer.cellW / 2,
+            boardBottom + 30,
+            `CORE -${dmg}!`,
+            '#FF0055',
+            20
+          );
+          this.triggerStateUpdate();
+        }
+      }
+    }
+  }
+
+  private resolveArcadeImpacts() {
+    if (this.arcadeMode === 'mega') {
+      this.resolveMegaHits();
+    } else if (this.arcadeMode === 'rush') {
+      this.resolveRushCrossings();
+    } else if (this.arcadeMode === 'defense') {
+      this.resolveDefenseImpacts();
+    }
+  }
+
+  // 메가 보스: 내 투사체 셀이 보스 영역(상단 보드 자리)에 닿으면 명중.
+  // 배리어 중 20%, 그로기 중 250% 데미지. 지령 조건 충족 명중은 그로기 발동.
+  private resolveMegaHits() {
+    const cellW = this.renderer.cellW;
+    const cellH = this.renderer.cellH;
+    const gap = this.renderer.gap;
+    const bossBottom = this.renderer.enemyOriginY + GRID_ROWS * (cellH + gap) - gap;
+    const bossLeft = this.renderer.enemyOriginX;
+    const bossRight = bossLeft + GRID_COLS * (cellW + gap) - gap;
+
+    for (let i = this.projectileMgr.projectiles.length - 1; i >= 0; i--) {
+      const p = this.projectileMgr.projectiles[i];
+      if (p.owner !== 'player') continue;
+      for (const cell of p.cells) {
+        if (cell.destroyed) continue;
+        const cellCenterX = p.x + cell.relCol * (cellW + gap) + cellW / 2;
+        const cellCenterY = p.y + cell.relRow * (cellH + gap) + cellH / 2;
+        if (cellCenterY > bossBottom || cellCenterX < bossLeft || cellCenterX > bossRight) continue;
+
+        const broke =
+          this.megaBarrier &&
+          this.megaOrder !== null &&
+          matchesWeakness(this.megaOrder, {
+            color: p.color,
+            shapeType: p.shapeType,
+            cells: p.cells.length,
+            frontline: !!p.frontline,
+          });
+        this.comboCount++;
+        this.comboTimer = 4.0;
+        this.comboMax = Math.max(this.comboMax, this.comboCount);
+        this.stats.maxCombo = this.comboMax;
+        this.comboCutin(this.comboCount, this.player.archetypeId);
+        const mult = this.comboMultiplier;
+        const dmgMult = this.megaBarrier ? MEGA_BARRIER_MULT : MEGA_GROGGY_MULT;
+        const finalDmg = Math.max(1, Math.round(p.damagePerCell * mult * dmgMult));
+        this.megaBossHp = Math.max(0, this.megaBossHp - finalDmg);
+        this.stats.damageDealt += finalDmg;
+        cell.destroyed = true;
+
+        this.hitstopTimer = 0.05;
+        this.screenShake = 0.25;
+        soundManager.playHit(true, this.comboCount);
+        this.particleSystem.emitBlockDestruction(cellCenterX, cellCenterY, p.glowColor, 20);
+        this.particleSystem.addFloatingText(
+          cellCenterX,
+          cellCenterY - 10,
+          this.megaBarrier ? `-${finalDmg}` : `-${finalDmg} GROGGY!`,
+          this.megaBarrier ? '#94A3B8' : '#FFD166',
+          18
+        );
+
+        if (broke) {
+          this.megaOrderSuccess++;
+          this.megaBarrier = false;
+          this.megaGroggyUntil = this.gameTime + MEGA_GROGGY_SEC;
+          this.megaOrder = null;
+          this.particleSystem.addShockwave(960, 232, 200, '#FFD166');
+          this.particleSystem.addFloatingText(960, 300, '약점 파훼! 그로기 5초!', '#FFD166', 22);
+          soundManager.playStageClear();
+        }
+        this.triggerStateUpdate();
+      }
+    }
+  }
+
+  // 오더 러시: 내 투사체가 목표 라인(Y ≤ 80)을 통과하면 미션 판정.
+  // 달성 시 +3.0초·콤보 +1·점수 100×콤보 배율. 미션 외 발사는 콤보 유지.
+  private resolveRushCrossings() {
+    const cellW = this.renderer.cellW;
+    const cellH = this.renderer.cellH;
+    const gap = this.renderer.gap;
+    for (const p of this.projectileMgr.projectiles) {
+      if (p.owner !== 'player' || this.rushCounted.has(p.id)) continue;
+      const crossed = p.cells.some(
+        (c) => !c.destroyed && p.y + c.relRow * (cellH + gap) + cellH / 2 <= RUSH_GOAL_Y
+      );
+      if (!crossed) continue;
+      this.rushCounted.add(p.id);
+      const mission = this.rushMissions[0];
+      if (
+        mission &&
+        matchesMission(mission, {
+          color: p.color,
+          shapeType: p.shapeType,
+          cells: p.cells.length,
+          frontline: !!p.frontline,
+        })
+      ) {
+        this.rushCombo++;
+        this.rushComboMax = Math.max(this.rushComboMax, this.rushCombo);
+        this.rushOrdersDone++;
+        const gain = Math.round(RUSH_BASE_SCORE * comboMultFor(this.rushCombo));
+        this.rushScore += gain;
+        this.rushTimeLeft += RUSH_BONUS_SEC;
+        this.rushMissions.shift();
+        this.rushMissions.push(randomRushMission(this.rushOrdersDone));
+        this.particleSystem.addFloatingText(
+          960,
+          500,
+          `미션 달성! +${gain}점 · +${RUSH_BONUS_SEC.toFixed(1)}초`,
+          '#FFD166',
+          20
+        );
+        soundManager.playStageClear();
+        this.triggerStateUpdate();
+      }
+    }
+  }
+
+  // 코어 디펜스: 투사체 셀 ↔ 운석 셀 충돌(상성 2배) + 운석 격파 시
+  // 카운터 오버차지 + 운석-캐릭터 접촉 피해.
+  private resolveDefenseImpacts() {
+    const cellW = this.renderer.cellW;
+    const cellH = this.renderer.cellH;
+    const gap = this.renderer.gap;
+    const kills: { meteor: ArcadeMeteor; killer: ShapeProjectile }[] = [];
+
+    for (const p of this.projectileMgr.projectiles) {
+      if (p.owner !== 'player') continue;
+      for (const cell of p.cells) {
+        if (cell.destroyed) continue;
+        const cx = p.x + cell.relCol * (cellW + gap);
+        const cy = p.y + cell.relRow * (cellH + gap);
+        let consumed = false;
+        for (const m of this.defenseMeteors) {
+          if (consumed) break;
+          for (const mc of m.cells) {
+            if (mc.destroyed) continue;
+            const mx = m.x + mc.relCol * (cellW + gap);
+            const my = m.y + mc.relRow * (cellH + gap);
+            const overlapX = Math.max(0, Math.min(cx + cellW, mx + cellW) - Math.max(cx, mx));
+            const overlapY = Math.max(0, Math.min(cy + cellH, my + cellH) - Math.max(cy, my));
+            if (overlapX <= 8 || overlapY <= 8) continue;
+            // 상성(청→적→황→청) 명중 시 데미지 2배.
+            const counter = p.color === counterColorOf(m.color);
+            mc.hp -= p.damagePerCell * (counter ? 2 : 1);
+            cell.destroyed = true;
+            consumed = true;
+            soundManager.playClash();
+            if (mc.hp <= 0) {
+              mc.destroyed = true;
+              this.particleSystem.emitBlockDestruction(mx + cellW / 2, my + cellH / 2, p.glowColor, 12);
+              if (m.cells.every((c) => c.destroyed)) {
+                kills.push({ meteor: m, killer: p });
+              }
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    // 격파 처리: 카운터 오버차지 (남은 셀 가속 1회 + 디스카드 1스택 즉시 충전).
+    for (const { meteor, killer } of kills) {
+      const idx = this.defenseMeteors.indexOf(meteor);
+      if (idx < 0) continue;
+      this.defenseMeteors.splice(idx, 1);
+      this.defenseDestroyed++;
+      if (!this.defenseOvercharged.has(killer.id)) {
+        this.defenseOvercharged.add(killer.id);
+        killer.vy *= 1.4;
+      }
+      if (this.player.discardStacks < 3) {
+        this.player.discardStacks = Math.min(3, this.player.discardStacks + 1);
+        this.player.discardRecharge = 0;
+      }
+      this.particleSystem.addShockwave(meteor.x + 60, meteor.y + 30, 90, '#FFFFFF');
+      this.particleSystem.addFloatingText(
+        meteor.x + 60,
+        meteor.y,
+        '카운터 오버차지! 디스카드 +1',
+        '#00FFAA',
+        16
+      );
+      soundManager.playSkillReady();
+      this.triggerStateUpdate();
+    }
+
+    // 운석-캐릭터 접촉: 15 피해 (0.15초 연속 명중 보호는 takeDamage가 처리).
+    for (const m of this.defenseMeteors) {
+      for (const mc of m.cells) {
+        if (mc.destroyed) continue;
+        const cx = m.x + mc.relCol * (cellW + gap) + cellW / 2;
+        const cy = m.y + mc.relRow * (cellH + gap) + cellH / 2;
+        const dist = Math.hypot(cx - this.player.x, cy - this.player.y);
+        if (dist < this.player.radius + cellW / 2) {
+          const before = this.player.hp;
+          this.player.takeDamage(METEOR_TOUCH_DMG, true);
+          const dealt = Math.max(0, before - this.player.hp);
+          if (dealt > 0) {
+            this.stats.damageTaken += dealt;
+            this.player.knockbackY = 180;
+            mc.destroyed = true;
+            this.hitstopTimer = 0.05;
+            this.screenShake = 0.3;
+            this.particleSystem.emitBlockDestruction(cx, cy, '#FF5500', 16);
+            this.particleSystem.addFloatingText(this.player.x, this.player.y - 20, `-${dealt} HIT!`, '#FF3366', 18);
+            this.player.invincibleTimer = Math.max(this.player.invincibleTimer, 0.15);
+            this.triggerStateUpdate();
+          }
+        }
+      }
+    }
+  }
+
+  // --- ARCADE: 종료 판정 + 기록 ------------------------------------------------
+
+  private checkArcadeEnd() {
+    if (this.status !== 'playing') return;
+    if (this.arcadeMode === 'mega') {
+      if (this.megaBossHp <= 0) {
+        this.finishMegaVictory();
+      } else if (this.player.hp <= 0) {
+        this.finishArcadeDefeat('KO');
+      }
+    } else if (this.arcadeMode === 'rush') {
+      if (this.rushTimeLeft <= 0) {
+        this.finishRushEnd();
+      }
+    } else if (this.arcadeMode === 'defense') {
+      if (this.player.hp <= 0) {
+        this.finishArcadeDefeat('KO');
+      } else if (this.playerCore.hp <= 0) {
+        this.finishArcadeDefeat('CORE DESTROYED');
+      }
+    }
+  }
+
+  private finishMegaVictory() {
+    const timeSec = this.stats.gameDuration;
+    this.arcadeRecords = recordMegaClear(timeSec, this.comboMax);
+    const total = this.megaOrderSuccess + this.megaOrderFail;
+    const rate = total > 0 ? Math.round((this.megaOrderSuccess / total) * 100) : 100;
+    this.arcadeResult = {
+      mode: 'mega',
+      title: '메가 보스 격파!',
+      lines: [
+        {
+          label: '클리어 타임',
+          value: formatArcadeTime(timeSec),
+          best:
+            this.arcadeRecords.megaBoss.bestTimeSec !== null
+              ? `BEST ${formatArcadeTime(this.arcadeRecords.megaBoss.bestTimeSec)}`
+              : undefined,
+        },
+        {
+          label: '최대 콤보',
+          value: `${this.comboMax}`,
+          best: `BEST ${this.arcadeRecords.megaBoss.maxCombo}`,
+        },
+        { label: '파훼 성공률', value: `${rate}% (${this.megaOrderSuccess}/${total})` },
+        { label: '클리어 횟수', value: `${this.arcadeRecords.megaBoss.clearCount}회` },
+        { label: '플레이 시간', value: formatArcadeTime(timeSec) },
+      ],
+    };
+    this.beginSlowmo('victory');
+    soundManager.playVictory();
+    this.triggerStateUpdate();
+  }
+
+  private finishRushEnd() {
+    this.arcadeRecords = recordRushRun(this.rushScore, this.rushOrdersDone, this.rushComboMax);
+    this.arcadeResult = {
+      mode: 'rush',
+      title: '오더 러시 종료!',
+      lines: [
+        {
+          label: '최종 점수',
+          value: `${this.rushScore.toLocaleString()}점`,
+          best: `BEST ${this.arcadeRecords.orderRush.bestScore.toLocaleString()}점`,
+        },
+        {
+          label: '미션 달성',
+          value: `${this.rushOrdersDone}개`,
+          best: `BEST ${this.arcadeRecords.orderRush.maxOrders}개`,
+        },
+        {
+          label: '최대 콤보',
+          value: `${this.rushComboMax}`,
+          best: `BEST ${this.arcadeRecords.orderRush.maxCombo}`,
+        },
+        { label: '플레이 시간', value: formatArcadeTime(this.stats.gameDuration) },
+      ],
+    };
+    this.beginSlowmo('victory');
+    soundManager.playVictory();
+    this.triggerStateUpdate();
+  }
+
+  private finishArcadeDefeat(cause: DefeatCause) {
+    // 디펜스는 종료 시점에 기록을 저장한다 (메가 패배는 기록 없음).
+    if (this.arcadeMode === 'defense') {
+      this.arcadeRecords = recordDefenseRun(
+        this.defenseWave,
+        this.stats.gameDuration,
+        this.defenseDestroyed
+      );
+      this.arcadeResult = {
+        mode: 'defense',
+        title: '코어 디펜스 종료',
+        lines: [
+          {
+            label: '도달 웨이브',
+            value: `WAVE ${this.defenseWave}`,
+            best: `BEST WAVE ${this.arcadeRecords.meteorDefense.bestWave}`,
+          },
+          {
+            label: '생존 시간',
+            value: formatArcadeTime(this.stats.gameDuration),
+            best: `BEST ${formatArcadeTime(this.arcadeRecords.meteorDefense.bestSurviveSec)}`,
+          },
+          {
+            label: '운석 격파',
+            value: `${this.defenseDestroyed}개`,
+            best: `BEST ${this.arcadeRecords.meteorDefense.maxDestroyed}개`,
+          },
+        ],
+      };
+    } else {
+      // 메가 보스 패배: 기록 저장 없이 이번 판 결과만 표시.
+      const total = this.megaOrderSuccess + this.megaOrderFail;
+      const rate = total > 0 ? Math.round((this.megaOrderSuccess / total) * 100) : 0;
+      this.arcadeResult = {
+        mode: 'mega',
+        title: '메가 보스전 패배',
+        lines: [
+          { label: '보스 남은 HP', value: `${Math.round(this.megaBossHp)} / ${MEGA_BOSS_MAX_HP}` },
+          { label: '최대 콤보', value: `${this.comboMax}` },
+          { label: '파훼 성공률', value: `${rate}% (${this.megaOrderSuccess}/${total})` },
+          { label: '플레이 시간', value: formatArcadeTime(this.stats.gameDuration) },
+        ],
+      };
+    }
+    this.beginSlowmo('defeat', cause);
+    soundManager.playDefeat();
+    this.triggerStateUpdate();
+  }
+
   // Pure physical collision damage: ONLY direct character hits take damage (Back wall damage DELETED)
   private resolveBoardAndCharacterImpacts() {
     const gap = this.renderer.gap;
@@ -2487,12 +3304,16 @@ export class GameEngine {
             // with no hit resolution at all — no combo, no cell loss, no
             // floating text. (Dash evasion keeps its old consume behavior.)
             if (targetOpponent.invincibleTimer > 0) continue;
-            // Consecutive hit combo scaling
-            this.comboCount++;
-            this.comboTimer = 4.0;
-            this.comboMax = Math.max(this.comboMax, this.comboCount);
-            this.stats.maxCombo = this.comboMax;
-            this.comboCutin(this.comboCount, this.player.archetypeId);
+            // Consecutive hit combo scaling (v2.2 balance: a sniper 1-2
+            // cell snipe does not raise the combo or refresh its timer —
+            // the hit still deals damage at the current multiplier).
+            if (countsForCombo(p.archetypeId, p.cells.length, p.isBeam)) {
+              this.comboCount++;
+              this.comboTimer = 4.0;
+              this.comboMax = Math.max(this.comboMax, this.comboCount);
+              this.stats.maxCombo = this.comboMax;
+              this.comboCutin(this.comboCount, this.player.archetypeId);
+            }
 
             const mult = this.comboMultiplier;
             // v2.2 anti-instant-kill: one direct hit deals at most 35.
@@ -2573,11 +3394,15 @@ export class GameEngine {
           const cellCenterY = cellTop + cellH / 2;
           const col = Math.floor((cellCenterX - this.renderer.enemyOriginX) / (cellW + gap));
           if (cellCenterY < this.renderer.enemyOriginY && col >= 3 && col <= 5) {
-            this.comboCount++;
-            this.comboTimer = 4.0;
-            this.comboMax = Math.max(this.comboMax, this.comboCount);
-            this.stats.maxCombo = this.comboMax;
-            this.comboCutin(this.comboCount, this.player.archetypeId);
+            // v2.2 balance: a sniper 1-2 cell snipe does not raise the
+            // combo or refresh its timer (damage still applies).
+            if (countsForCombo(p.archetypeId, p.cells.length, p.isBeam)) {
+              this.comboCount++;
+              this.comboTimer = 4.0;
+              this.comboMax = Math.max(this.comboMax, this.comboCount);
+              this.stats.maxCombo = this.comboMax;
+              this.comboCutin(this.comboCount, this.player.archetypeId);
+            }
             const mult = this.comboMultiplier;
             // 90s+ core hits deal double damage.
             const coreMult = this.gameTime >= 90 ? 2 : 1;
@@ -2636,10 +3461,15 @@ export class GameEngine {
             // packet, and my HP is reported via royale_status.
             let dmg = p.damagePerCell;
             if (this.mode === 'multi' || this.mode === 'royale') {
-              this.combo2Count++;
-              this.combo2Timer = 4.0;
-              this.combo2Max = Math.max(this.combo2Max, this.combo2Count);
-              if (this.combo2Count === 7 && this.player2) this.showCutin(this.player2.archetypeId, 'COMBO x7', 1200);
+              // v2.2 balance: a sniper 1-2 cell snipe does not raise the
+              // combo or refresh its timer (damage still scales with the
+              // current streak).
+              if (countsForCombo(p.archetypeId, p.cells.length, p.isBeam)) {
+                this.combo2Count++;
+                this.combo2Timer = 4.0;
+                this.combo2Max = Math.max(this.combo2Max, this.combo2Count);
+                if (this.combo2Count === 7 && this.player2) this.showCutin(this.player2.archetypeId, 'COMBO x7', 1200);
+              }
               if (!this.isOnline) {
                 dmg = Math.round(p.damagePerCell * this.combo2Multiplier);
               }
@@ -2690,10 +3520,15 @@ export class GameEngine {
           if (cellCenterY > boardBottom && col >= 3 && col <= 5) {
             let dmg = p.damagePerCell;
             if (this.mode === 'multi' || this.mode === 'royale') {
-              this.combo2Count++;
-              this.combo2Timer = 4.0;
-              this.combo2Max = Math.max(this.combo2Max, this.combo2Count);
-              if (this.combo2Count === 7 && this.player2) this.showCutin(this.player2.archetypeId, 'COMBO x7', 1200);
+              // v2.2 balance: a sniper 1-2 cell snipe does not raise the
+              // combo or refresh its timer (damage still scales with the
+              // current streak).
+              if (countsForCombo(p.archetypeId, p.cells.length, p.isBeam)) {
+                this.combo2Count++;
+                this.combo2Timer = 4.0;
+                this.combo2Max = Math.max(this.combo2Max, this.combo2Count);
+                if (this.combo2Count === 7 && this.player2) this.showCutin(this.player2.archetypeId, 'COMBO x7', 1200);
+              }
               if (!this.isOnline) {
                 dmg = Math.round(p.damagePerCell * this.combo2Multiplier);
               }
@@ -2740,6 +3575,11 @@ export class GameEngine {
     this.isOnline = false;
     this.campaignRun = null;
     this.resetRoyaleState();
+    this.arcadeMode = null;
+    this.arcadeResult = null;
+    this.defenseMeteors = [];
+    this.megaLaserCols = [];
+    this.megaLaserArmed = false;
     this.playerBoard.reset();
     this.enemyBoard.reset();
     this.projectileMgr.clear();
@@ -2792,6 +3632,8 @@ export class GameEngine {
       this.startGame('single', this.currentStage, this.player.archetypeId);
     } else if (this.mode === 'boss') {
       this.startGame('boss', 30, this.player.archetypeId);
+    } else if (this.mode === 'arcade') {
+      this.startArcade(this.arcadeMode ?? 'mega');
     }
   }
 
@@ -2799,6 +3641,20 @@ export class GameEngine {
     if (!this.ctx) return;
     const now = performance.now();
     const cutin = this.cutin && now < this.cutin.until ? this.cutin : null;
+    // 아케이드 렌더 상태 (한 덩어리로 전달; null이면 기존 모드와 동일).
+    const arcadeRender: ArcadeRenderState | null = this.isArcade
+      ? {
+          mode: this.arcadeMode ?? 'mega',
+          bossHp: this.megaBossHp,
+          bossMaxHp: MEGA_BOSS_MAX_HP,
+          barrier: this.megaBarrier,
+          groggyUntil: this.megaGroggyUntil,
+          order: this.megaOrder,
+          orderDeadline: this.megaOrderDeadline,
+          laserCols: this.megaLaserArmed ? this.megaLaserCols : [],
+          meteors: this.defenseMeteors,
+        }
+      : null;
     this.renderer.render(
       this.ctx,
       this.playerBoard,
@@ -2819,7 +3675,8 @@ export class GameEngine {
       this.shrinkPhase,
       this.mode === 'royale',
       this.royaleWarnings,
-      cutin
+      cutin,
+      arcadeRender
     );
 
     // v2.2 Phase 2: start-countdown overlay (3-2-1-FIGHT) above the canvas.

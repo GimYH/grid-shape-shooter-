@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { DefeatCause, GameStats } from '../types/game';
+import { ArcadeResult } from '../game/arcade';
 import { loadCampaignProgress, formatClearTime } from '../game/campaign';
 import { RotateCcw, Trophy, Skull, Zap, Swords } from 'lucide-react';
 
@@ -14,11 +15,13 @@ interface GameOverModalProps {
   // v2.2 Phase 2: online rematch votes so far (0-2), shown when > 0.
   rematchVotes?: number;
   isOnline?: boolean;
+  // ARCADE: 모드별 결과 라인 (있으면 표준 스탯 그리드 대신 표시).
+  arcade?: ArcadeResult | null;
   onRestart: () => void;
   onReturnToTitle: () => void;
 }
 
-export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, rank, defeatCause, rematchVotes, isOnline, onRestart, onReturnToTitle }) => {
+export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, rank, defeatCause, rematchVotes, isOnline, arcade, onRestart, onReturnToTitle }) => {
   const isVictory = status === 'victory';
   // v2.3: a career no-continue badge, if one was ever earned.
   const noContinue = useMemo(
@@ -55,10 +58,31 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, ran
           </div>
         )}
         <p className="text-xs text-slate-400 mb-6">
-          {isVictory
+          {arcade
+            ? arcade.title
+            : isVictory
             ? '상대 진영을 격파하고 그리드 지배권을 확보했습니다.'
             : '플레이어 HP가 소진되었습니다. 다시 도전하거나 전술을 재정비하세요.'}
         </p>
+
+        {/* ARCADE: 모드별 결과 라인 (표준 스탯 그리드 대신 표시) */}
+        {arcade && (
+          <div className="grid grid-cols-2 gap-3 w-full mb-6 text-left">
+            {arcade.lines.map((line) => (
+              <div key={line.label} className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl">
+                <span className="text-[11px] text-slate-400 block mb-0.5">{line.label}</span>
+                <span className="text-xl font-bold font-mono text-cyan-400 tabular-nums break-keep">
+                  {line.value}
+                </span>
+                {line.best && (
+                  <span className="block text-[11px] font-mono text-amber-400 tabular-nums mt-0.5">
+                    {line.best}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* v2.2 Phase 2: defeat cause */}
         {!isVictory && defeatCause && (
@@ -86,7 +110,9 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, ran
           </div>
         )}
 
-        {/* Battle Stats Grid */}
+        {/* Battle Stats Grid (아케이드가 아닐 때만 표시) */}
+        {!arcade && (
+          <>
         <div className="grid grid-cols-2 gap-3 w-full mb-6 text-left">
           <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl">
             <span className="text-[11px] text-slate-400 block mb-0.5">DAMAGE DEALT</span>
@@ -140,6 +166,8 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, ran
             </span>
           </div>
         </div>
+          </>
+        )}
 
         {/* Buttons */}
         <div className="flex flex-col gap-2.5 w-full">

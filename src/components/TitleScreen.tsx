@@ -1,10 +1,12 @@
-import React, { useEffect } from 'react';
-import { Play, Sparkles, Swords, Zap, Code2, Crown, Users, Globe } from 'lucide-react';
+import React, { useEffect, useMemo } from 'react';
+import { Play, Sparkles, Swords, Zap, Code2, Crown, Users, Globe, Timer, Shield, Gamepad2 } from 'lucide-react';
 import { GameMode } from '../types/game';
+import { ARCADE_MODE_META, ArcadeModeId, formatArcadeTime, loadArcadeRecords } from '../game/arcade';
 import arenaBanner from '../assets/images/cyber_arena_banner_1794503925161.jpg';
 
 interface TitleScreenProps {
   onSelectMode: (mode: GameMode) => void;
+  onSelectArcade: (mode: ArcadeModeId) => void;
   onOpenOnlineModal: () => void;
   onOpenRoyaleModal: () => void;
   onOpenGodotModal: () => void;
@@ -12,10 +14,28 @@ interface TitleScreenProps {
 
 export const TitleScreen: React.FC<TitleScreenProps> = ({
   onSelectMode,
+  onSelectArcade,
   onOpenOnlineModal,
   onOpenRoyaleModal,
   onOpenGodotModal,
 }) => {
+  // 아케이드 BEST 기록 (이 기기 localStorage 기준).
+  const arcadeRecords = useMemo(() => loadArcadeRecords(), []);
+  const arcadeBest = (id: ArcadeModeId): string => {
+    if (id === 'mega') {
+      return arcadeRecords.megaBoss.bestTimeSec !== null
+        ? `BEST ${formatArcadeTime(arcadeRecords.megaBoss.bestTimeSec)} · ${arcadeRecords.megaBoss.clearCount}회 클리어`
+        : '아직 클리어 기록 없음';
+    }
+    if (id === 'rush') {
+      return arcadeRecords.orderRush.bestScore > 0
+        ? `BEST ${arcadeRecords.orderRush.bestScore.toLocaleString()}점 · ${arcadeRecords.orderRush.maxOrders}개 미션`
+        : '아직 기록 없음';
+    }
+    return arcadeRecords.meteorDefense.bestWave > 0
+      ? `BEST WAVE ${arcadeRecords.meteorDefense.bestWave} · ${formatArcadeTime(arcadeRecords.meteorDefense.bestSurviveSec)} 생존`
+      : '아직 기록 없음';
+  };
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.code === 'Enter' || e.code === 'Space') {
@@ -180,6 +200,39 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           <Code2 className="w-3.5 h-3.5 text-cyan-400" />
           <span>Godot 4.x / Steam Engine Specs</span>
         </button>
+
+        {/* Arcade tab: 3 mini-games, standard craft only (no archetype pick) */}
+        <div className="w-full max-w-4xl mb-6">
+          <div className="flex items-center justify-center gap-2 mb-2">
+            <Gamepad2 className="w-4 h-4 text-fuchsia-300" />
+            <span className="text-xs font-black tracking-[0.25em] text-fuchsia-300 uppercase">
+              Arcade · 표준 기체로 동일 조건 경쟁
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 w-full">
+            {ARCADE_MODE_META.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => onSelectArcade(m.id)}
+                className="p-4 rounded-[22px] crack-overlay bg-gradient-to-b from-slate-800/60 to-slate-950/80 hover:from-slate-700/60 hover:to-slate-900 border text-white flex flex-col items-center justify-center shadow-lg hover:scale-105 active:scale-95 transition-all cursor-pointer group"
+                style={{ borderColor: `${m.accent}66` }}
+              >
+                {m.id === 'mega' ? (
+                  <Crown className="w-7 h-7 text-rose-400 group-hover:scale-110 transition-transform mb-1.5" />
+                ) : m.id === 'rush' ? (
+                  <Timer className="w-7 h-7 text-amber-300 group-hover:scale-110 transition-transform mb-1.5" />
+                ) : (
+                  <Shield className="w-7 h-7 text-cyan-300 group-hover:scale-110 transition-transform mb-1.5" />
+                )}
+                <span className="text-sm font-bold tracking-wide">{m.nameKo}</span>
+                <span className="text-[11px] mt-0.5 break-keep" style={{ color: m.accent }}>
+                  {m.desc}
+                </span>
+                <span className="text-[10px] text-slate-400 mt-1 font-mono">{arcadeBest(m.id)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
 
         {/* User requested Key guide line */}
         <div className="text-xs font-mono text-slate-300 crack-bg bg-slate-900/70 border border-slate-800 px-4 py-2 rounded-full tracking-wider flex flex-wrap items-center justify-center gap-3 gap-y-1 break-keep">
