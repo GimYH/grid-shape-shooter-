@@ -373,3 +373,37 @@ NODE_ENV=production bun run start
 - 헤드리스 시나리오 테스트 25/25 통과(타겟팅 4종 10건·순위 4건·KO 보상 수치/상한 6건·포탈/다굴 상수 4건·healthSum 1건). 테스트 파일은 사용 후 삭제. 테스트 중 발견한 것: `selectRoyaleTarget`은 id 문자열(`string | null`)을 반환하고, 대상이 없으면 null(발사 버림) — 테스트 기대를 그에 맞게 수정했고, `setCoreHp` 상한 누락은 실제 버그로 고쳤다.
 - `npm run dev` 기동 후 curl 확인: `npm run dev`는 Vite가 아니라 게임 서버(3000번)다. HTTP 200, 1554 bytes, `<title>Grid Shape Shooter</title>`. 확인 후 dev 서버 정지함.
 - 미확인(상위에서 별도 진행): 멀티탭 동기화·포탈 송수신 실동작·봇 실전 동작·로얄 HUD 실화면(브라우저 필요).
+
+## 버그 수정 라운드 (2026-11-21, 로얄 라이브 테스트 + v2.2 감사 지적 — 미배포)
+
+### 1. 끝난 로얄 방 재입장 시 카운트다운 멈춤 (주 버그)
+- 원인 (클라이언트 상태, 서버는 정상): `OnlineRoomModal`이 마운트된 채로 숨겨만 지기 때문에(`isOpen`이 false여도 훅 상태 유지) 끝난 방의 로비 상태가 남는다. `royale_countdown`을 받으면 `countdown=3`이 되는데, 배틀 시작(`onRoyaleStart`) 때 `setCountdown(null)`을 안 해서 3이 그대로 남았다. "홈으로 돌아가기"는 `returnToTitle()` → `isOnline` true → `networkManager.disconnect()`로 서버에서는 플레이어를 빼고 방도 지우지만, 모달의 `royaleRoomCode`·`royalePlayers`·`countdown`은 그대로라 다시 GRID ROYALE을 열면 죽은 방 로비 + "3초 후 배틀로얄 시작!" 배너 + 비활성 버튼이 뜬다. 새 패킷이 올 일이 없어 영원히 멈춘다.
+- 수정 (`src/components/OnlineRoomModal.tsx`): ① `onRoyaleStart`에서 `setCountdown(null)`로 카운트다운 배너를 끈다. ② 모달이 열릴 때(`isOpen` 변화) 클라이언트가 방에 없어(`!networkManager.royaleRoomCode`)면 낡은 로비 상태(`royaleRoomCode`·`royaleMyId`·`royalePlayers`·`countdown`·`isReady`·`errorMessage`)를 전부 초기화해 생성/참가 화면부터 시작한다.
+- 서버 측 확인: 끝난 방은 `join_royale_room`에서 "이미 시작된 방입니다"로 거부되고, 마지막 인간이 나가면 방이 삭제돼(봇 포함) 재참가 시 "방 코드를 찾을 수 없습니다"가 뜬다. WS 통합 테스트 9/9로 검증했다. 끝난 방의 봇 정리도 같은 경로로 확인했다(방 삭제 시 봇 타이머 정지·방 제거).
+- 미검증: 모달 재입장 실동작은 브라우저(멀티탭/실기)에서만 확인 가능하다.
+
+### 2. 패배 화면 BATTLE TIME 오표시 (0:05 vs 실제 약 1분)
+- 원인: `stats.gameDuration`이 `gameTime`을 그대로 썼는데, `gameTime`은 rAF 업데이트 루프 안에서만 `dt`를 누적하고 `dt`는 0.05초로 클램프된다. 프레임이 20fps 아래로 떨어지거나 탭이 스로틀되면 벽시계보다 훨씬 느리게 간다. 코드 전수 확인 결과 `gameTime`을 리셋하는 곳은 시작 함수 3곳뿐이라, 두 번째 리셋이 아니라 클램프+스로틀이 원인이다.
+- 수정 (`src/game/GameEngine.ts`): `battleStartAt`(performance.now(), 시작 함수 3곳에서 설정)을 두고, `update()`에서 `stats.gameDuration`을 벽시계 경과 시간으로 계산한다. `gameTime` 자체는 수축·AI 타이밍용 게임 클럭으로 그대로 둔다. 일시정지 중에는 `update()`가 안 돌아서 정지 시간은 제외된다(기존 의미 유지). 듀얼·싱글 경로도 같은 코드라 같이 적용되고, 표시만 바뀌어 게임 로직에는 영향이 없다.
+- 미검증: 라이브 실기에서 BATTLE TIME이 실제와 일치하는지(브라우저 필요).
+
+### 3. 감사 지적 사소한 항목 (a~g)
+- (a) 카운터 오버차지 상한 (`src/game/ProjectileManager.ts`): 충돌 승리 시 오버차지(속도 ×1.4 + `onClashWin` 경유 스킬 쿨 -1.0s·`clashesWon` 카운트)에 `cells.length >= 3` 조건을 추가했다. `cells`는 발사 때 클러스터 크기 그대로라(제거 없이 파괴 표시만 함) 초기 칸 수와 같다. 스나이퍼 1~2칸 투사체는 승리해도 오버차지 안 한다. 1발당 1회 가드(`overcharged` Set)는 유지.
+- (b) 붕괴 시 트랜스포터 포획 강제 해제 (`src/game/CharacterController.ts`, `src/game/GameEngine.ts`): `PlayerCharacter.releaseGrabOnCollapsedColumn()`을 추가했다. `collapseSide()`에서 해당 진영 캐릭터(플레이어·로컬 2인전 P2)에 대해 호출한다. 포획 타일이 1·9열이면 즉시 해제, 아니면 유지. 잠긴 타일 스왑 차단 동작은 그대로 둔다. AI 적에게는 grab 상태가 없어(감사 확인) 건드릴 것 없다.
+- (c) 스피드스터 블링크 (`src/game/CharacterController.ts`): 착지 타일이 잠겼으면(`board.isTileLocked`) 황색 변환 + 타일 쿨다운 해제를 건너뛴다. 블링크 이동 자체와 스킬 쿨다운 소모는 그대로다.
+- (d) 80초 예고 문구 (`src/game/GameEngine.ts`, `src/components/GameHUD.tsx`): 지시서 문구 "10초 후 수축 중심 고정! (전방: 화력 유지 / 후방: 회피 유리)"로 캔버스 플로팅 텍스트와 HUD 필 문구를 둘 다 바꿨다.
+- (e) 모노크롬 실드 링 색 (`src/game/Renderer.ts`): `renderPlayer`의 실드 링을 모노크롬일 때만 흰색(`#FFFFFF`), 나머지는 기존 청색(`#33CCFF`)으로 했다. AI 적 쪽은 실드 링을 그리지 않아 건드릴 것 없다.
+- (f) 극후반 교착 방지 (`src/game/GridEngine.ts`): `updateClusters()` 시작 때 잠기지 않은 타일 수를 세어 9칸 이하면 최소 발사 기준을 3칸 → 2칸으로 완화한다(스나이퍼는 1칸 그대로). 기존 루프 안 `minLaunchSize` 선언은 제거하고 공통 변수로 올렸다.
+- (g) 낡은 주석 (`src/game/GameEngine.ts:142-143`): "최종 보스 코어 350" → 400으로 고쳤다(실제 S30 `coreHp` 400, `stages.ts` 확인).
+
+### 건드리지 않은 것 (지시대로)
+- 보스 각성 연출(화면 전체 붉은 플래시): 오라/링/텍스트/충격파/경고음 구현 유지.
+- 배경 이미지 5장: 절차적 렌더링 유지.
+- 스킬 안전 필터 공통 헬퍼 리팩터: 잠긴 타일 제외 동작이 이미 되므로 안 했다.
+- AI 가중치 수치화: 행동으로 구현돼 있으므로 그대로 둔다.
+
+### 검증 (2026-11-21)
+- `npx tsc --noEmit` 통과, `npm run build` 통과.
+- 로직 단위 테스트 19/19 통과 (`~/workspace/grid-shape-shooter/bugfix-2026-11-21.test.ts`, `npx tsx`로 실행): (f) 45칸/10칸/9칸 경계 + 스나이퍼 1칸, (a) 2칸 무발동 + 3칸 1회 발동, (b) 1·9열 해제 + 5열 유지, (c) 잠긴 타일 미변환 + 열린 타일 황색 변환.
+- WS 통합 테스트 9/9 통과 (`~/workspace/grid-shape-shooter/bugfix-2026-11-21.royale-ws-test.ts`, 프로덕션 서버를 테스트 포트 18711로 띄워 실행): 방 생성·2인 참가·카운트다운·시작·탈락 순위(#2·#1)·끝난 방 참가 거부·마지막 인간 이탈 후 방 삭제·새 방 생성.
+- 미검증(브라우저 필요): 모달 재입장 실동작, BATTLE TIME 실기 일치 여부, 블링크·실드 링·80초 문구 실화면.
