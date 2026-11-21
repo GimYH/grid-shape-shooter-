@@ -1432,6 +1432,11 @@ export class CanvasRenderer {
       ctx.shadowBlur = 10;
       ctx.font = `700 ${ft.fontSize}px "Chakra Petch", monospace`;
       ctx.textAlign = 'center';
+      // Dark outline (same as the neutral-zone watermark) so text stays
+      // readable over bright tiles as well as dark bands.
+      ctx.strokeStyle = 'rgba(3, 6, 12, 0.85)';
+      ctx.lineWidth = Math.max(3, Math.round(ft.fontSize / 5));
+      ctx.strokeText(ft.text, ft.x, ft.y);
       ctx.fillText(ft.text, ft.x, ft.y);
       ctx.restore();
     }

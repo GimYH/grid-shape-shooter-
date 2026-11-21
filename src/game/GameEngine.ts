@@ -1769,7 +1769,11 @@ export class GameEngine {
     if (!this.shrinkWarned && this.gameTime >= 80) {
       this.shrinkWarned = true;
       this.shrinkPhase = 'warning';
-      this.particleSystem.addFloatingText(960, 120, '10초 후 수축 중심 고정! (전방: 화력 유지 / 후방: 회피 유리)', '#FF4444', 22);
+      // 80s warning banner: drawn in the neutral zone (Y 404..636) so it
+      // never covers either board. It rises ~31px over its 0.9s life
+      // (35px/s), ending at ~468 — clear of the watermark (baseline 525)
+      // and both boards (enemy bottom 384, player top 656).
+      this.particleSystem.addFloatingText(960, 500, '10초 후 수축 중심 고정! (전방: 화력 유지 / 후방: 회피 유리)', '#FF4444', 22);
       this.triggerStateUpdate();
     }
     if (this.shrinkPhase === 'warning' && this.gameTime >= 90) {
