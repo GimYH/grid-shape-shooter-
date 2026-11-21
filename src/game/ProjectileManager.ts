@@ -123,6 +123,7 @@ export class ProjectileManager {
       speedMultiplier: speedMult,
       glowColor: COLOR_HEX[cluster.color],
       trailTimer: 0,
+      frontline,
     };
 
     this.projectiles.push(proj);
@@ -160,6 +161,8 @@ export class ProjectileManager {
       speedMultiplier: 2.2,
       glowColor: '#00FFAA',
       trailTimer: 0,
+      frontline: false,
+      isBeam: true,
     };
 
     this.projectiles.push(proj);

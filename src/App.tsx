@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { GameEngine, GameStatus } from './game/GameEngine';
 import { GameHUD } from './components/GameHUD';
+import { RoyaleHUD } from './components/RoyaleHUD';
+import { RoyalePlayerInfo } from './game/royale';
 import { TitleScreen } from './components/TitleScreen';
 import { GameOverModal } from './components/GameOverModal';
 import { StageClearModal } from './components/StageClearModal';
@@ -25,16 +27,18 @@ export default function App() {
   const [showCharSelect, setShowCharSelect] = useState<boolean>(false);
   const [showStageSelect, setShowStageSelect] = useState<boolean>(false);
   const [showOnlineModal, setShowOnlineModal] = useState<boolean>(false);
+  const [onlineModalMode, setOnlineModalMode] = useState<'duel' | 'royale'>('duel');
   const [initialRoomCode, setInitialRoomCode] = useState<string>('');
   const [, setTick] = useState(0);
 
-  // Check URL query parameters for invite link ?room=CODE
+  // Check URL query parameters for invite link ?room=CODE[&mode=royale]
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
       const roomParam = params.get('room');
       if (roomParam) {
         setInitialRoomCode(roomParam.toUpperCase());
+        setOnlineModalMode(params.get('mode') === 'royale' ? 'royale' : 'duel');
         setShowOnlineModal(true);
       }
     } catch {
@@ -187,6 +191,17 @@ export default function App() {
     []
   );
 
+  // GRID ROYALE (v2.4): same stability requirement as the duel callback —
+  // OnlineRoomModal's effect depends on it.
+  const handleStartRoyaleBattle = useCallback(
+    (players: RoyalePlayerInfo[], myId: string, seed: number) => {
+      setShowOnlineModal(false);
+      engineRef.current?.startRoyaleGame(players, myId, seed);
+      setGameStatus('playing');
+    },
+    []
+  );
+
   const handleNextStage = () => {
     engineRef.current?.advanceToNextStage();
     setStageNum(engineRef.current?.currentStage || 1);
@@ -243,17 +258,26 @@ export default function App() {
         {gameStatus === 'title' && (
           <TitleScreen
             onSelectMode={handleSelectMode}
-            onOpenOnlineModal={() => setShowOnlineModal(true)}
+            onOpenOnlineModal={() => {
+              setOnlineModalMode('duel');
+              setShowOnlineModal(true);
+            }}
+            onOpenRoyaleModal={() => {
+              setOnlineModalMode('royale');
+              setShowOnlineModal(true);
+            }}
             onOpenGodotModal={() => setShowGodotModal(true)}
           />
         )}
 
-        {/* Online 1v1 Room Lobby Modal */}
+        {/* Online 1v1 Room Lobby Modal (duel + GRID ROYALE) */}
         <OnlineRoomModal
           isOpen={showOnlineModal}
           initialRoomCode={initialRoomCode}
+          mode={onlineModalMode}
           onClose={() => setShowOnlineModal(false)}
           onStartOnlineBattle={handleStartOnlineBattle}
+          onStartRoyaleBattle={handleStartRoyaleBattle}
         />
 
         {/* Stage Select (Single Campaign, v2.3) */}
@@ -275,13 +299,22 @@ export default function App() {
         {/* Active HUD & In-Game UI */}
         {(gameStatus === 'playing' || gameStatus === 'paused') && engineRef.current && (
           <>
-            <GameHUD
-              engine={engineRef.current}
-              onOpenGodotModal={() => setShowGodotModal(true)}
-              onTogglePause={handleTogglePause}
-              onRestart={handleRestart}
-              onReturnToTitle={handleReturnToTitle}
-            />
+            {engineRef.current.mode === 'royale' ? (
+              <RoyaleHUD
+                engine={engineRef.current}
+                onOpenGodotModal={() => setShowGodotModal(true)}
+                onRestart={handleRestart}
+                onReturnToTitle={handleReturnToTitle}
+              />
+            ) : (
+              <GameHUD
+                engine={engineRef.current}
+                onOpenGodotModal={() => setShowGodotModal(true)}
+                onTogglePause={handleTogglePause}
+                onRestart={handleRestart}
+                onReturnToTitle={handleReturnToTitle}
+              />
+            )}
             {/* Virtual Controls for Touch Screens (landscape/tablet only;
                 portrait uses the joystick controls below the stage) */}
             {!isPortrait && <OnscreenControls engine={engineRef.current} />}
@@ -329,6 +362,7 @@ export default function App() {
           <GameOverModal
             status={gameStatus}
             stats={engineRef.current.stats}
+            rank={engineRef.current.mode === 'royale' ? engineRef.current.royaleRank : null}
             onRestart={handleRestart}
             onReturnToTitle={handleReturnToTitle}
           />

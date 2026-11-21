@@ -1,4 +1,11 @@
 import { ArchetypeId } from '../types/game';
+import {
+  RoyaleFirePacket,
+  RoyaleIncomingPacket,
+  RoyaleKoPacket,
+  RoyalePlayerInfo,
+  RoyaleStatusPacket,
+} from './royale';
 
 export interface NetworkAction {
   // board_hash/board_request/board_sync: periodic board reconciliation.
@@ -44,6 +51,20 @@ export class NetworkManager {
   public onPeerAction?: (action: NetworkAction) => void;
   public onPeerLeft?: () => void;
   public onError?: (message: string) => void;
+
+  // GRID ROYALE (v2.4) callbacks. The room id is assigned by the server;
+  // the client keeps its own player id to tell its own status apart.
+  public royalePlayerId: string | null = null;
+  public royaleRoomCode: string | null = null;
+  public onRoyaleRoomCreated?: (roomCode: string, playerId: string, players: RoyalePlayerInfo[]) => void;
+  public onRoyaleRoomJoined?: (roomCode: string, playerId: string, players: RoyalePlayerInfo[]) => void;
+  public onRoyalePlayerList?: (players: RoyalePlayerInfo[]) => void;
+  public onRoyaleCountdown?: (seconds: number) => void;
+  public onRoyaleCountdownCancelled?: () => void;
+  public onRoyaleStart?: (players: RoyalePlayerInfo[], seed: number) => void;
+  public onRoyaleIncoming?: (packet: RoyaleIncomingPacket) => void;
+  public onRoyaleStatus?: (packet: RoyaleStatusPacket) => void;
+  public onRoyaleKo?: (packet: RoyaleKoPacket) => void;
 
   public connect(): Promise<void> {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -200,6 +221,63 @@ export class NetworkManager {
         if (this.onError) this.onError(msg.message as string);
         break;
       }
+      // --- GRID ROYALE -------------------------------------------------
+      case 'royale_room_created': {
+        this.royalePlayerId = msg.playerId as string;
+        this.royaleRoomCode = msg.roomCode as string;
+        if (this.onRoyaleRoomCreated) {
+          this.onRoyaleRoomCreated(
+            msg.roomCode as string,
+            msg.playerId as string,
+            (msg.players as RoyalePlayerInfo[]) || []
+          );
+        }
+        break;
+      }
+      case 'royale_room_joined': {
+        this.royalePlayerId = msg.playerId as string;
+        this.royaleRoomCode = msg.roomCode as string;
+        if (this.onRoyaleRoomJoined) {
+          this.onRoyaleRoomJoined(
+            msg.roomCode as string,
+            msg.playerId as string,
+            (msg.players as RoyalePlayerInfo[]) || []
+          );
+        }
+        break;
+      }
+      case 'royale_player_list': {
+        if (this.onRoyalePlayerList) {
+          this.onRoyalePlayerList((msg.players as RoyalePlayerInfo[]) || []);
+        }
+        break;
+      }
+      case 'royale_countdown': {
+        if (this.onRoyaleCountdown) this.onRoyaleCountdown(msg.seconds as number);
+        break;
+      }
+      case 'royale_countdown_cancelled': {
+        if (this.onRoyaleCountdownCancelled) this.onRoyaleCountdownCancelled();
+        break;
+      }
+      case 'royale_start': {
+        if (this.onRoyaleStart) {
+          this.onRoyaleStart((msg.players as RoyalePlayerInfo[]) || [], msg.seed as number);
+        }
+        break;
+      }
+      case 'royale_incoming': {
+        if (this.onRoyaleIncoming) this.onRoyaleIncoming(msg as unknown as RoyaleIncomingPacket);
+        break;
+      }
+      case 'royale_status': {
+        if (this.onRoyaleStatus) this.onRoyaleStatus(msg as unknown as RoyaleStatusPacket);
+        break;
+      }
+      case 'royale_ko': {
+        if (this.onRoyaleKo) this.onRoyaleKo(msg as unknown as RoyaleKoPacket);
+        break;
+      }
     }
   }
 
@@ -236,6 +314,43 @@ export class NetworkManager {
     this.send({ type: 'rematch_request' });
   }
 
+  // --- GRID ROYALE (v2.4) ---------------------------------------------
+  public async createRoyaleRoom(archetype: ArchetypeId, fillBots: boolean, name: string): Promise<void> {
+    await this.connect();
+    this.send({ type: 'create_royale_room', archetype, fillBots, name });
+  }
+
+  public async joinRoyaleRoom(roomCode: string, archetype: ArchetypeId, name: string): Promise<void> {
+    await this.connect();
+    this.send({ type: 'join_royale_room', roomCode: roomCode.toUpperCase().trim(), archetype, name });
+  }
+
+  public selectRoyaleArchetype(archetype: ArchetypeId) {
+    this.send({ type: 'royale_select_archetype', archetype });
+  }
+
+  public setRoyaleReady(ready: boolean) {
+    this.send({ type: 'royale_ready', ready });
+  }
+
+  public forceStartRoyale() {
+    this.send({ type: 'royale_force_start' });
+  }
+
+  public sendRoyaleFire(fire: RoyaleFirePacket) {
+    this.send({ type: 'royale_fire', fire });
+  }
+
+  public sendRoyaleStatus(status: RoyaleStatusPacket & { killerId?: string | null }) {
+    this.send({ type: 'royale_status', ...status });
+  }
+
+  public leaveRoyaleRoom() {
+    this.send({ type: 'royale_leave' });
+    this.royalePlayerId = null;
+    this.royaleRoomCode = null;
+  }
+
   private send(data: unknown) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(data));
@@ -259,6 +374,8 @@ export class NetworkManager {
     this.isConnected = false;
     this.opponentConnected = false;
     this.opponentReady = false;
+    this.royalePlayerId = null;
+    this.royaleRoomCode = null;
   }
 }
 

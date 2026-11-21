@@ -75,6 +75,13 @@ export interface ShapeProjectile {
   speedMultiplier: number;
   glowColor: string;
   trailTimer: number;
+  // v2.4 royale: whether the launch counted as frontline (kept so the
+  // portal packet can carry it without recomputing it mid-flight).
+  frontline?: boolean;
+  // v2.4 royale: true for sniper beams (one-off snipes, ignoreCounter).
+  isBeam?: boolean;
+  // v2.4 royale: the player id the projectile came from (kill credit).
+  fromPlayerId?: string;
   targetColX?: number; // For homing
   isMeteorExploding?: boolean;
 }
@@ -115,7 +122,7 @@ export interface Shockwave {
   alpha: number;
 }
 
-export type GameMode = 'single' | 'multi' | 'boss';
+export type GameMode = 'single' | 'multi' | 'boss' | 'royale';
 
 export type AiLevel = 1 | 2 | 3 | 4 | 5;
 

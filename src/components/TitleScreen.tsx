@@ -6,12 +6,14 @@ import arenaBanner from '../assets/images/cyber_arena_banner_1794503925161.jpg';
 interface TitleScreenProps {
   onSelectMode: (mode: GameMode) => void;
   onOpenOnlineModal: () => void;
+  onOpenRoyaleModal: () => void;
   onOpenGodotModal: () => void;
 }
 
 export const TitleScreen: React.FC<TitleScreenProps> = ({
   onSelectMode,
   onOpenOnlineModal,
+  onOpenRoyaleModal,
   onOpenGodotModal,
 }) => {
   useEffect(() => {
@@ -112,8 +114,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           3칸 이상 연결된 발판을 밟고 거대 형상 투사체를 사출하세요. 대시(Shift)로 적의 탄환을 회피하고, 패가 꼬였을 땐 디스카드(X/E) 3스택 탄창으로 바닥을 리로드하여 승리하세요!
         </p>
 
-        {/* 4 Core Game Modes Grid (Local 2P restored) */}
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3.5 w-full max-w-3xl mb-6">
+        {/* 5 Core Game Modes Grid (Local 2P restored, GRID ROYALE v2.4) */}
+        <div className="grid grid-cols-1 sm:grid-cols-5 gap-3.5 w-full max-w-4xl mb-6">
           {/* 1. Single Campaign */}
           <button
             onClick={() => onSelectMode('single')}
@@ -155,6 +157,19 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
             <Crown className="w-7 h-7 text-rose-400 group-hover:scale-110 transition-transform mb-1.5" />
             <span className="text-sm font-bold tracking-wide">최종 보스전</span>
             <span className="text-[11px] text-rose-300 mt-0.5">OMNI-OVERLORD [HP 250]</span>
+          </button>
+
+          {/* 5. GRID ROYALE (v2.4) */}
+          <button
+            onClick={onOpenRoyaleModal}
+            className="p-4 rounded-[22px] crack-overlay bg-gradient-to-b from-fuchsia-500/35 to-slate-950/80 hover:from-fuchsia-500/45 hover:to-slate-900 border-2 border-fuchsia-400 text-white flex flex-col items-center justify-center shadow-xl shadow-fuchsia-950/70 hover:scale-105 active:scale-95 transition-all cursor-pointer group relative overflow-hidden"
+          >
+            <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-full bg-fuchsia-400 text-slate-950 font-black text-[9px] uppercase tracking-wider">
+              8P
+            </div>
+            <Swords className="w-7 h-7 text-fuchsia-300 group-hover:scale-110 transition-transform mb-1.5 animate-pulse" />
+            <span className="text-sm font-bold tracking-wide text-fuchsia-300">GRID ROYALE</span>
+            <span className="text-[11px] text-fuchsia-400 font-semibold mt-0.5">최대 8인 · 워프 포탈</span>
           </button>
         </div>
 

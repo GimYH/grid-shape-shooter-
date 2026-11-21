@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { networkManager } from '../game/NetworkManager';
 import { ARCHETYPE_LIST, ARCHETYPES } from '../game/archetypes';
 import { ArchetypeId } from '../types/game';
+import { RoyalePlayerInfo, ROYALE_MAX_PLAYERS } from '../game/royale';
 import {
   Globe,
   Copy,
@@ -15,11 +16,15 @@ import {
   Zap,
   ArrowRight,
   Loader2,
+  Crown,
+  Bot,
 } from 'lucide-react';
 
 interface OnlineRoomModalProps {
   isOpen: boolean;
   initialRoomCode?: string;
+  // 'duel': 1:1 room; 'royale': GRID ROYALE room (up to 8, optional bots).
+  mode?: 'duel' | 'royale';
   onClose: () => void;
   onStartOnlineBattle: (
     role: 'p1' | 'p2',
@@ -28,13 +33,16 @@ interface OnlineRoomModalProps {
     p2Arch: ArchetypeId,
     seed?: number
   ) => void;
+  onStartRoyaleBattle?: (players: RoyalePlayerInfo[], myId: string, seed: number) => void;
 }
 
 export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
   isOpen,
   initialRoomCode = '',
+  mode = 'duel',
   onClose,
   onStartOnlineBattle,
+  onStartRoyaleBattle,
 }) => {
   const [tab, setTab] = useState<'create' | 'join'>(initialRoomCode ? 'join' : 'create');
   const [myArchetype, setMyArchetype] = useState<ArchetypeId>('lancer');
@@ -48,6 +56,15 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
   const [role, setRole] = useState<'p1' | 'p2' | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
+
+  // --- GRID ROYALE (v2.4) lobby state ---
+  const [nickname, setNickname] = useState('');
+  const [fillBots, setFillBots] = useState(true);
+  const [royalePlayers, setRoyalePlayers] = useState<RoyalePlayerInfo[]>([]);
+  const [royaleMyId, setRoyaleMyId] = useState<string | null>(null);
+  const [royaleRoomCode, setRoyaleRoomCode] = useState<string | null>(null);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const amRoyaleHost = royalePlayers.some((p) => p.id === royaleMyId && p.isHost);
 
   useEffect(() => {
     if (initialRoomCode) {
@@ -108,10 +125,46 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
       onStartOnlineBattle(activeRole, activeRoomCode, p1Arch, p2Arch, seed);
     };
 
+    // --- GRID ROYALE (v2.4) callbacks ---
+    networkManager.onRoyaleRoomCreated = (code, playerId, players) => {
+      setRoyaleRoomCode(code);
+      setRoyaleMyId(playerId);
+      setRoyalePlayers(players);
+      setIsReady(false);
+      setIsConnecting(false);
+      setCountdown(null);
+    };
+
+    networkManager.onRoyaleRoomJoined = (code, playerId, players) => {
+      setRoyaleRoomCode(code);
+      setRoyaleMyId(playerId);
+      setRoyalePlayers(players);
+      setIsReady(false);
+      setIsConnecting(false);
+      setCountdown(null);
+    };
+
+    networkManager.onRoyalePlayerList = (players) => {
+      setRoyalePlayers(players);
+    };
+
+    networkManager.onRoyaleCountdown = (seconds) => {
+      setCountdown(seconds);
+    };
+
+    networkManager.onRoyaleCountdownCancelled = () => {
+      setCountdown(null);
+    };
+
+    networkManager.onRoyaleStart = (players, seed) => {
+      const myId = networkManager.royalePlayerId || royaleMyId || '';
+      onStartRoyaleBattle?.(players, myId, seed);
+    };
+
     return () => {
       // Don't disconnect if entering battle
     };
-  }, [currentRoomCode, role, onStartOnlineBattle]);
+  }, [currentRoomCode, role, onStartOnlineBattle, onStartRoyaleBattle, royaleMyId]);
 
   if (!isOpen) return null;
 
@@ -177,6 +230,372 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
     setOpponentReady(false);
     setErrorMessage(null);
   };
+
+  // --- GRID ROYALE (v2.4) handlers ---
+  const handleCreateRoyaleRoom = async () => {
+    setErrorMessage(null);
+    setIsConnecting(true);
+    try {
+      await networkManager.createRoyaleRoom(myArchetype, fillBots, nickname.trim());
+    } catch {
+      setErrorMessage('서버 연결 실패. 네트워크 상태를 확인하세요.');
+      setIsConnecting(false);
+    }
+  };
+
+  const handleJoinRoyaleRoom = async () => {
+    if (!roomCodeInput.trim()) {
+      setErrorMessage('방 코드를 입력하세요.');
+      return;
+    }
+    setErrorMessage(null);
+    setIsConnecting(true);
+    try {
+      await networkManager.joinRoyaleRoom(roomCodeInput.trim(), myArchetype, nickname.trim());
+    } catch {
+      setErrorMessage('방 접속 실패. 코드를 다시 확인하세요.');
+      setIsConnecting(false);
+    }
+  };
+
+  const handleToggleRoyaleReady = () => {
+    const nextReady = !isReady;
+    setIsReady(nextReady);
+    networkManager.setRoyaleReady(nextReady);
+  };
+
+  const handleSelectRoyaleArchetype = (arch: ArchetypeId) => {
+    setMyArchetype(arch);
+    setIsReady(false);
+    if (royaleRoomCode) {
+      networkManager.selectRoyaleArchetype(arch);
+    }
+  };
+
+  const handleForceStartRoyale = () => {
+    networkManager.forceStartRoyale();
+  };
+
+  const royaleInviteUrl = royaleRoomCode
+    ? `${window.location.origin}${window.location.pathname}?room=${royaleRoomCode}&mode=royale`
+    : '';
+
+  const handleCopyRoyaleLink = () => {
+    if (!royaleInviteUrl) return;
+    navigator.clipboard.writeText(royaleInviteUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleExitRoyaleRoom = () => {
+    networkManager.leaveRoyaleRoom();
+    setRoyaleRoomCode(null);
+    setRoyaleMyId(null);
+    setRoyalePlayers([]);
+    setIsReady(false);
+    setCountdown(null);
+    setErrorMessage(null);
+  };
+
+  // --- GRID ROYALE (v2.4) lobby UI ---
+  if (mode === 'royale') {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 font-['Chakra_Petch'] select-none">
+        <div className="crack-bg bg-slate-900 border border-fuchsia-500/50 rounded-[28px] max-w-3xl w-full max-h-[92vh] flex flex-col shadow-2xl shadow-fuchsia-950/80 overflow-hidden">
+          {/* Header */}
+          <div className="px-6 py-4 border-b border-slate-800 bg-slate-950/70 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-2xl bg-fuchsia-500/20 text-fuchsia-400 border border-fuchsia-500/40">
+                <Crown className="w-5 h-5 animate-pulse" />
+              </div>
+              <div>
+                <h2 className="text-base font-bold text-white tracking-wide uppercase flex items-center gap-2">
+                  GRID ROYALE · 최대 8인 배틀로얄
+                </h2>
+                <p className="text-xs text-slate-400">
+                  워프 포탈로 투사체를 주고받는 생존 게임 — 최후의 1인이 승리합니다
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                handleExitRoyaleRoom();
+                onClose();
+              }}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Content Body */}
+          <div className="p-6 flex-1 overflow-y-auto">
+            {errorMessage && (
+              <div className="mb-4 p-3 rounded-2xl bg-rose-950/60 border border-rose-500/60 text-xs text-rose-300 font-semibold flex items-center justify-between">
+                <span>{errorMessage}</span>
+                <button onClick={() => setErrorMessage(null)} className="text-rose-400 hover:text-white">✕</button>
+              </div>
+            )}
+
+            {!royaleRoomCode ? (
+              <div className="space-y-6">
+                {/* Tab Selector */}
+                <div className="flex bg-slate-950 p-1 rounded-full border border-slate-800 max-w-sm mx-auto">
+                  <button
+                    onClick={() => setTab('create')}
+                    className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      tab === 'create'
+                        ? 'bg-fuchsia-500 text-slate-950 shadow-md shadow-fuchsia-500/30'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    방 만들기 (Host)
+                  </button>
+                  <button
+                    onClick={() => setTab('join')}
+                    className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      tab === 'join'
+                        ? 'bg-fuchsia-500 text-slate-950 shadow-md shadow-fuchsia-500/30'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    초대 코드로 참가 (Join)
+                  </button>
+                </div>
+
+                {/* Nickname */}
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-2 uppercase tracking-wider">
+                    닉네임 (비워두면 자동 배정)
+                  </label>
+                  <input
+                    type="text"
+                    value={nickname}
+                    onChange={(e) => setNickname(e.target.value)}
+                    placeholder="예: 네린"
+                    maxLength={12}
+                    className="w-full max-w-xs bg-slate-900 border border-slate-700 rounded-full px-4 py-2 text-sm font-bold text-fuchsia-300 focus:outline-none focus:border-fuchsia-400"
+                  />
+                </div>
+
+                {/* Archetype Picker */}
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-2 uppercase tracking-wider">
+                    내 캐릭터 선택 (Select Your Archetype)
+                  </label>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {ARCHETYPE_LIST.map((arch) => {
+                      const isSel = myArchetype === arch.id;
+                      return (
+                        <button
+                          key={arch.id}
+                          onClick={() => handleSelectRoyaleArchetype(arch.id)}
+                          className={`p-2.5 rounded-2xl border text-left transition-all cursor-pointer ${
+                            isSel
+                              ? 'bg-fuchsia-950/80 border-fuchsia-400 shadow-sm shadow-fuchsia-500/40 text-white'
+                              : 'bg-slate-950/60 hover:bg-slate-800/60 border-slate-800 text-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-1 mb-1">
+                            <div className="min-w-0">
+                              <span className="text-xs font-bold block truncate">{arch.nameKo}</span>
+                              <span className="text-[9px] text-slate-400 block uppercase tracking-wider">{arch.name}</span>
+                            </div>
+                            <span
+                              className="text-[9px] px-1 rounded uppercase font-bold shrink-0"
+                              style={{ backgroundColor: `${arch.color}30`, color: arch.color }}
+                            >
+                              {arch.badge}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-slate-400 block truncate">{arch.title}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {tab === 'create' ? (
+                  <div className="crack-bg bg-slate-950/70 border border-slate-800 rounded-2xl p-5 text-center">
+                    <h3 className="text-sm font-bold text-white mb-1">
+                      새 배틀로얄 방을 생성합니다
+                    </h3>
+                    <p className="text-xs text-slate-300 mb-4 max-w-md mx-auto break-keep text-pretty">
+                      방 생성 후 <strong>초대 링크</strong>를 공유하면 최대 7명이 더 들어올 수 있습니다. 봇 채우기를 켜두면 빈 슬롯은 봇으로 채워져 8인전이 됩니다.
+                    </p>
+                    <label className="flex items-center justify-center gap-2 text-xs font-bold text-slate-300 mb-4 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={fillBots}
+                        onChange={(e) => setFillBots(e.target.checked)}
+                        className="w-4 h-4 accent-fuchsia-500"
+                      />
+                      빈 슬롯을 봇으로 채우기 (fillBots)
+                    </label>
+                    <button
+                      onClick={handleCreateRoyaleRoom}
+                      disabled={isConnecting}
+                      className="px-6 py-3 rounded-full crack-overlay bg-gradient-to-r from-fuchsia-500 to-amber-400 hover:from-fuchsia-400 hover:to-amber-300 text-slate-950 font-bold text-xs tracking-wider uppercase inline-flex items-center gap-2 shadow-lg shadow-fuchsia-500/30 transition-all hover:scale-102 active:scale-98 cursor-pointer disabled:opacity-50"
+                    >
+                      {isConnecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
+                      <span>배틀로얄 방 생성</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="crack-bg bg-slate-950/70 border border-slate-800 rounded-2xl p-5 text-center">
+                    <h3 className="text-sm font-bold text-white mb-1">
+                      초대 코드를 입력하세요
+                    </h3>
+                    <p className="text-xs text-slate-300 mb-4 break-keep text-pretty">
+                      친구가 공유해준 6자리 방 코드를 입력하거나 초대 링크를 브라우저 주소창에 붙여넣으세요.
+                    </p>
+                    <div className="flex gap-2 max-w-sm mx-auto mb-4">
+                      <input
+                        type="text"
+                        value={roomCodeInput}
+                        onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())}
+                        placeholder="예: 7A9B2X"
+                        maxLength={8}
+                        className="flex-1 bg-slate-900 border border-slate-700 rounded-full px-4 py-2 text-center text-sm font-mono font-bold tracking-widest text-fuchsia-300 uppercase focus:outline-none focus:border-fuchsia-400"
+                      />
+                      <button
+                        onClick={handleJoinRoyaleRoom}
+                        disabled={isConnecting}
+                        className="px-5 py-2 rounded-full bg-fuchsia-500 hover:bg-fuchsia-400 text-slate-950 font-bold text-xs uppercase tracking-wider transition-all cursor-pointer disabled:opacity-50"
+                      >
+                        {isConnecting ? <Loader2 className="w-4 h-4 animate-spin" /> : '참가하기'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {/* Room Code & Invite Link Bar */}
+                <div className="crack-bg bg-slate-950 border border-fuchsia-500/40 rounded-2xl p-4">
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+                    <div>
+                      <span className="text-[10px] text-slate-400 uppercase tracking-widest block font-bold">
+                        ROYALE ROOM CODE
+                      </span>
+                      <span className="text-2xl font-black font-mono text-fuchsia-400 tracking-widest">
+                        {royaleRoomCode}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 w-full sm:w-auto">
+                      <button
+                        onClick={handleCopyRoyaleLink}
+                        className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-full crack-overlay bg-gradient-to-r from-fuchsia-500/25 to-amber-500/25 hover:from-fuchsia-500/35 hover:to-amber-500/35 text-fuchsia-300 border border-fuchsia-400/60 text-xs font-bold tracking-wide transition-all hover:scale-102 active:scale-98 cursor-pointer shadow-md shadow-fuchsia-950/60"
+                      >
+                        {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                        <span>{copied ? '초대 링크 복사됨!' : '🔗 배틀로얄 초대 링크 복사'}</span>
+                      </button>
+                      <button
+                        onClick={handleExitRoyaleRoom}
+                        className="px-3 py-2 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs transition-colors cursor-pointer"
+                      >
+                        방 나가기
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-2 text-[11px] text-slate-400 bg-slate-900/60 p-2 rounded-lg truncate font-mono">
+                    {royaleInviteUrl}
+                  </div>
+                </div>
+
+                {/* Countdown banner */}
+                {countdown !== null && (
+                  <div className="text-center p-4 rounded-2xl bg-fuchsia-950/70 border border-fuchsia-500/60">
+                    <span className="text-4xl font-black text-fuchsia-300 tabular-nums">{countdown}</span>
+                    <p className="text-xs text-fuchsia-200 font-bold mt-1">초 후 배틀로얄 시작!</p>
+                  </div>
+                )}
+
+                {/* Player slots (8) */}
+                <div>
+                  <div className="text-xs font-bold text-slate-300 mb-2 uppercase tracking-wider">
+                    참가자 ({royalePlayers.length}/{ROYALE_MAX_PLAYERS}명)
+                    {fillBots && <span className="text-slate-500 normal-case ml-2">· 빈 슬롯은 봇으로 채워집니다</span>}
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {Array.from({ length: ROYALE_MAX_PLAYERS }, (_, i) => {
+                      const p = royalePlayers[i];
+                      if (!p) {
+                        return (
+                          <div
+                            key={`empty-${i}`}
+                            className="rounded-2xl border border-dashed border-slate-800 bg-slate-950/40 p-3 text-center text-xs text-slate-600"
+                          >
+                            빈 슬롯
+                          </div>
+                        );
+                      }
+                      const arch = ARCHETYPES[p.archetype];
+                      const isMe = p.id === royaleMyId;
+                      return (
+                        <div
+                          key={p.id}
+                          className={`rounded-2xl border p-3 ${
+                            isMe
+                              ? 'bg-fuchsia-950/60 border-fuchsia-400/70'
+                              : 'bg-slate-950/80 border-slate-800'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs font-bold text-white truncate flex items-center gap-1.5 min-w-0">
+                              {p.isHost && <Crown className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
+                              {p.isBot && <Bot className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
+                              <span className="truncate">{p.name}</span>
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-400">
+                            {arch.nameKo} · {arch.badge}
+                          </div>
+                          <div className="text-[10px] font-bold mt-1">
+                            <span className={p.ready ? 'text-emerald-400' : 'text-slate-400'}>
+                              {p.ready ? 'READY' : 'WAITING'}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Ready / Force start */}
+                <div className="pt-2 text-center">
+                  <button
+                    onClick={handleToggleRoyaleReady}
+                    disabled={countdown !== null}
+                    className={`px-8 py-3.5 rounded-full crack-overlay font-bold text-sm tracking-wider uppercase transition-all shadow-xl cursor-pointer ${
+                      isReady
+                        ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/30'
+                        : 'bg-gradient-to-r from-fuchsia-500 to-amber-400 hover:from-fuchsia-400 hover:to-amber-300 text-slate-950 shadow-fuchsia-500/30 hover:scale-105 active:scale-95'
+                    } disabled:opacity-50`}
+                  >
+                    {isReady ? '출격 준비 취소 (Cancel Ready)' : '출격 준비 완료 (Ready for Battle)'}
+                  </button>
+                  {amRoyaleHost && (
+                    <button
+                      onClick={handleForceStartRoyale}
+                      disabled={countdown !== null}
+                      className="ml-3 px-6 py-3.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-sm tracking-wider uppercase transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      강제 시작 (방장)
+                    </button>
+                  )}
+                  <p className="text-xs text-slate-400 mt-2 break-keep">
+                    전원 준비 완료 또는 방장 강제 시작 시 3초 카운트다운 후 배틀로얄이 시작됩니다.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 font-['Chakra_Petch'] select-none">
