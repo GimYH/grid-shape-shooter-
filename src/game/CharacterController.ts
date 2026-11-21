@@ -52,6 +52,11 @@ export class PlayerCharacter {
   // v2.2: shrink-zone outside-wall speed penalty (x0.7), set by GameEngine.
   public externalSpeedMult: number = 1.0;
   public moveDir: { x: number; y: number } = { x: 0, y: -1 };
+  // Mobile portrait joystick (analog): set by GameEngine.joystickVector.
+  // Direction is pre-quantized to 8 ways by the joystick; the vector
+  // length (0..1) is the stick deflection and scales movement speed.
+  // Overrides the keyboard vector while active. P1 only.
+  public analogMove: { x: number; y: number } | null = null;
 
   // Remote smooth interpolation targets
   public targetX: number = 0;
@@ -225,6 +230,20 @@ export class PlayerCharacter {
       if (keys['ArrowRight'] || keys['KeyD']) moveX += 1;
     }
 
+    // Analog joystick input (mobile portrait controls): overrides the
+    // keyboard vector. Direction is pre-quantized to 8 ways by the
+    // joystick; the vector length (0..1) scales movement speed.
+    let speedScale = 1;
+    if (this.analogMove) {
+      const mag = Math.hypot(this.analogMove.x, this.analogMove.y);
+      if (mag >= 0.15) {
+        const clamped = Math.min(1, mag);
+        moveX = this.analogMove.x / mag;
+        moveY = this.analogMove.y / mag;
+        speedScale = clamped;
+      }
+    }
+
     // Normalize and track facing direction
     const len = Math.hypot(moveX, moveY);
     if (len > 0) {
@@ -241,6 +260,9 @@ export class PlayerCharacter {
       finalMoveX = this.moveDir.x;
       finalMoveY = this.moveDir.y;
     }
+
+    // Joystick deflection scales the (possibly dashed) speed.
+    baseSpeed *= speedScale;
 
     // Apply knockback decay
     this.knockbackX *= Math.exp(-dt * 12);
@@ -502,6 +524,7 @@ export class PlayerCharacter {
     this.hitFlashTimer = 0;
     this.knockbackX = 0;
     this.knockbackY = 0;
+    this.analogMove = null;
     this.grabbedPos = null;
     this.grabbedTileColor = null;
     this.overdriveActive = false;

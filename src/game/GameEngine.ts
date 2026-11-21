@@ -95,6 +95,10 @@ export class GameEngine {
   public particleSystem: ParticleSystem;
 
   public keys: Record<string, boolean> = {};
+  // Mobile portrait joystick vector (set by MobileJoystickControls).
+  // Unit-ish vector, length 0..1 = stick deflection; null when released.
+  // Fed into player.analogMove every frame; P1 only, like touch controls.
+  public joystickVector: { x: number; y: number } | null = null;
   public gameTime: number = 0;
   public screenShake: number = 0;
   public hitstopTimer: number = 0;
@@ -444,6 +448,7 @@ export class GameEngine {
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
     }
+    this.joystickVector = null;
     this.removeInputs();
   }
 
@@ -553,6 +558,7 @@ export class GameEngine {
 
   private handleBlur = () => {
     this.keys = {};
+    this.joystickVector = null;
   };
 
   public startGame(
@@ -1476,6 +1482,7 @@ export class GameEngine {
 
     // Player Movement & Online Position Sync
     if (this.isOnline) {
+      this.player.analogMove = this.joystickVector;
       this.player.update(
         dt,
         this.keys,
@@ -1530,6 +1537,7 @@ export class GameEngine {
       // keyboard (P1 WASD, P2 Arrows); the old code ran updateRemote on
       // P2 here, which left P2 frozen in place.
       const isLocal2P = this.mode === 'multi';
+      this.player.analogMove = this.joystickVector;
       this.player.update(
         dt,
         this.keys,
