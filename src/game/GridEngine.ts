@@ -104,6 +104,29 @@ export class GridBoard {
     return this.shrinkLocked[row]?.[col] === true;
   }
 
+  // 1.5 공통 헬퍼 — 활성 타일 = 붕괴 열 밖 + 수축 잠금 아님. isTileLocked가
+  // 경계 밖·붕괴 열·수축 잠금을 모두 포함하므로 활성은 그 부정이다.
+  // 타일 변환·리필 스킬은 후보 선정을 이 헬퍼들로 통일한다.
+  public isTileActive(col: number, row: number): boolean {
+    return !this.isTileLocked(col, row);
+  }
+
+  // 보드 전체의 활성 타일 좌표 목록 (행 우선 순서).
+  public activeTiles(): { col: number; row: number }[] {
+    const out: { col: number; row: number }[] = [];
+    for (let r = 0; r < GRID_ROWS; r++) {
+      for (let c = 0; c < GRID_COLS; c++) {
+        if (this.isTileActive(c, r)) out.push({ col: c, row: r });
+      }
+    }
+    return out;
+  }
+
+  // 좌표 목록에서 활성 타일만 남긴다 (경계 밖 좌표도 떨어진다).
+  public filterActiveTiles<T extends { col: number; row: number }>(tiles: T[]): T[] {
+    return tiles.filter((t) => this.isTileActive(t.col, t.row));
+  }
+
   // v2.2 core collapse: lock the outer columns immediately. Tiles already
   // there keep their color but leave every cluster and cannot be used.
   public collapseSides() {
@@ -338,7 +361,7 @@ export class GridBoard {
     if (row < 0 || row >= GRID_ROWS) return [];
     const picks: { col: number; row: number; color: TileColor }[] = [];
     for (let c = 0; c < GRID_COLS; c++) {
-      if (this.tiles[row][c].cooldownRemaining > 0 && !this.isTileLocked(c, row)) {
+      if (this.tiles[row][c].cooldownRemaining > 0 && this.isTileActive(c, row)) {
         const color = TILE_COLORS[Math.floor(Math.random() * TILE_COLORS.length)];
         this.tiles[row][c].cooldownRemaining = 0;
         this.tiles[row][c].color = color;
@@ -353,7 +376,7 @@ export class GridBoard {
     if (row < 0 || row >= GRID_ROWS) return;
     for (const p of picks) {
       if (p.row !== row || p.col < 0 || p.col >= GRID_COLS) continue;
-      if (this.isTileLocked(p.col, row)) continue;
+      if (!this.isTileActive(p.col, row)) continue;
       this.tiles[row][p.col].cooldownRemaining = 0;
       this.tiles[row][p.col].color = p.color;
     }
@@ -365,7 +388,7 @@ export class GridBoard {
     let converted = 0;
     for (let r = 0; r < GRID_ROWS; r++) {
       if (converted >= count) break;
-      if (this.isTileLocked(col, r)) continue;
+      if (!this.isTileActive(col, r)) continue;
       const tile = this.tiles[r][col];
       tile.color = 'red';
       tile.cooldownRemaining = 0;
@@ -379,14 +402,10 @@ export class GridBoard {
   // reasoning as refillRow: never roll the same effect twice.
   public convertRandomToRed(count: number = 3): { col: number; row: number }[] {
     const picked: { col: number; row: number }[] = [];
-    const candidates: { col: number; row: number }[] = [];
-    for (let r = 0; r < GRID_ROWS; r++) {
-      for (let c = 0; c < GRID_COLS; c++) {
-        if (this.tiles[r][c].color !== 'red' && !this.isTileLocked(c, r)) {
-          candidates.push({ col: c, row: r });
-        }
-      }
-    }
+    // 후보는 활성 타일 중 적색이 아닌 타일만 (행 우선 순서 유지).
+    const candidates = this.activeTiles().filter(
+      (t) => this.tiles[t.row][t.col].color !== 'red'
+    );
     for (let i = candidates.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
@@ -402,9 +421,8 @@ export class GridBoard {
 
   // Apply a Monochrome conversion received from the remote player.
   public convertTilesToRed(tiles: { col: number; row: number }[]) {
-    for (const t of tiles) {
-      if (t.col < 0 || t.col >= GRID_COLS || t.row < 0 || t.row >= GRID_ROWS) continue;
-      if (this.isTileLocked(t.col, t.row)) continue;
+    // filterActiveTiles가 경계 밖·붕괴·잠금 좌표를 모두 거른다.
+    for (const t of this.filterActiveTiles(tiles)) {
       this.tiles[t.row][t.col].color = 'red';
       this.tiles[t.row][t.col].cooldownRemaining = 0;
     }
@@ -414,17 +432,15 @@ export class GridBoard {
   public paintAdjacentDominant(centerCol: number, centerRow: number) {
     const dom = this.getDominantColor();
     const targets = [
-      { c: centerCol, r: centerRow },
-      { c: centerCol + 1, r: centerRow },
-      { c: centerCol - 1, r: centerRow },
-      { c: centerCol, r: centerRow + 1 },
-      { c: centerCol, r: centerRow - 1 },
+      { col: centerCol, row: centerRow },
+      { col: centerCol + 1, row: centerRow },
+      { col: centerCol - 1, row: centerRow },
+      { col: centerCol, row: centerRow + 1 },
+      { col: centerCol, row: centerRow - 1 },
     ];
-    for (const t of targets) {
-      if (t.c >= 0 && t.c < GRID_COLS && t.r >= 0 && t.r < GRID_ROWS && !this.isTileLocked(t.c, t.r)) {
-        this.tiles[t.r][t.c].color = dom;
-        this.tiles[t.r][t.c].cooldownRemaining = 0;
-      }
+    for (const t of this.filterActiveTiles(targets)) {
+      this.tiles[t.row][t.col].color = dom;
+      this.tiles[t.row][t.col].cooldownRemaining = 0;
     }
   }
 
@@ -434,7 +450,7 @@ export class GridBoard {
       c1 < 0 || c1 >= GRID_COLS || r1 < 0 || r1 >= GRID_ROWS ||
       c2 < 0 || c2 >= GRID_COLS || r2 < 0 || r2 >= GRID_ROWS
     ) return;
-    if (this.isTileLocked(c1, r1) || this.isTileLocked(c2, r2)) return;
+    if (!this.isTileActive(c1, r1) || !this.isTileActive(c2, r2)) return;
     const tempColor = this.tiles[r1][c1].color;
     const tempCD = this.tiles[r1][c1].cooldownRemaining;
 
@@ -459,7 +475,7 @@ export class GridBoard {
     ];
     for (const t of targets) {
       if (t.c < 0 || t.c >= GRID_COLS || t.r < 0 || t.r >= GRID_ROWS) continue;
-      if (this.isTileLocked(t.c, t.r)) continue;
+      if (!this.isTileActive(t.c, t.r)) continue;
       const tile = this.tiles[t.r][t.c];
       tile.color = nextColor(tile.color);
       tile.cooldownRemaining = 0;

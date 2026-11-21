@@ -407,3 +407,31 @@ NODE_ENV=production bun run start
 - 로직 단위 테스트 19/19 통과 (`~/workspace/grid-shape-shooter/bugfix-2026-11-21.test.ts`, `npx tsx`로 실행): (f) 45칸/10칸/9칸 경계 + 스나이퍼 1칸, (a) 2칸 무발동 + 3칸 1회 발동, (b) 1·9열 해제 + 5열 유지, (c) 잠긴 타일 미변환 + 열린 타일 황색 변환.
 - WS 통합 테스트 9/9 통과 (`~/workspace/grid-shape-shooter/bugfix-2026-11-21.royale-ws-test.ts`, 프로덕션 서버를 테스트 포트 18711로 띄워 실행): 방 생성·2인 참가·카운트다운·시작·탈락 순위(#2·#1)·끝난 방 참가 거부·마지막 인간 이탈 후 방 삭제·새 방 생성.
 - 미검증(브라우저 필요): 모달 재입장 실동작, BATTLE TIME 실기 일치 여부, 블링크·실드 링·80초 문구 실화면.
+
+## 엣지케이스 재점검 + 1.5 공통 헬퍼 구현 (2026-11-21, v2.2 TASK.md 전수 재확인 — 미배포)
+
+### 재확인 결과 (Phase 1 + 2.3, 전부 구현됨)
+- 1.1: 9×5 보드(`GridEngine.ts:3-4`), 셀 110×56·간격 6(`Renderer.ts:19-21`), Y 원점 적 80/중립 404(높이 232)/플레이어 656(`Renderer.ts:25,27-28,31`), 해시 45자(`colorHash`, 5행×9열), 이동 420px/s(`CharacterController.ts:193`), 탄속 560px/s(`ProjectileManager.ts:96`), 리필 1.3s(`BASE_REFILL_TIME`), 대시 쿨 1.6s(스피드스터 1.0s)·무적 0.16s·3.5배(`CharacterController.ts:95,98,269`), 스킬 쿨 4.0/4.0/2.8/3.5/2.0/3.5/4.0(`archetypes.ts`), 콤보 유지 4.0s·양쪽 독립(`comboTimer`/`combo2Timer`, `GameEngine.ts:129,134-135,2002-2006`), 투사체 1발당 최대 +1(직접 명중 시 0.15s 보호로 같은 투사체의 추가 셀 스킵, `GameEngine.ts:2147-2154`).
+- 1.2: 전선 보너스 데미지 ×1.25·탄속 ×1.15(`ProjectileManager.ts:77-79,97-99`, 판정 `GameEngine.ts:329`), 3색 상성 2배 + 모노크롬 적색 예외(`ProjectileManager.ts:231-243,268-269`), 카운터 오버차지 ×1.4 + 스킬 쿨 -1.0s·1발당 1회·초기 3칸 이상 조건(`ProjectileManager.ts:292,297`, `onClashWin` `GameEngine.ts:231-238`, `clashesWon` 카운트), 디스카드 3스택·1.2s 충전·0.45s 리필(`CharacterController.ts:49-50,170-174,334-335`, `DISCARD_REFILL_TIME`), 0.15s 보호 + 1회 최대 35(코어 미적용, `MAX_SINGLE_HIT_DMG` `GameEngine.ts:49,2160,2220,2307,2336`), 스나이퍼 1~2칸 코어 50%(`sniperCoreDamageMult` `GameEngine.ts:78-79`).
+- 1.3: 코어 중앙 3열·HP 250/보스 400(`GameEngine.ts:148-151`, `stages.ts:166`), 이중 승리(캐릭터 HP 0 또는 코어 HP 0, `GameEngine.ts:2038-2050`), 균열 60%/30%(`setCoreHp`), 코어 명중은 콤보·전선·90초 2배·스나이퍼 50% 적용, 상태이상 미적용(`GameEngine.ts:2236-2255`), 50% 붕괴 7×5·밀어내기+0.3s 무적·리필 ×1.3 가속(`collapseSide`, `GameEngine.ts:1819,1829,1837`), 상태 정리 3가지(포획 해제 `releaseGrabOnCollapsedColumn` / `updateClusters` 즉시 재호출 `GridEngine.ts:111` / 비행 중 투사체 유지 — 붕괴 경로에 clear 없음).
+- 1.4: 80초 예고 문구 "(전방: 화력 유지 / 후방: 회피 유리)" 포함(`GameEngine.ts:1772`, `GameHUD.tsx:114`), 80초 예고·90초 시작(`GameEngine.ts:1769-1777`), 중심 고정 3~7열·2~4행 클램프(`clampShrinkAnchor`) + `sudden_death_anchor` 1회 교환(`GameEngine.ts:409`, `NetworkManager.ts:13,27`), 120초 2×2·135초 폐쇄(7열 붕괴 보드는 `boardRect`가 `colRange()`를 써서 7열 경계부터, `GameEngine.ts:337-338,424-441`), 90초 이후 코어 2배(`GameEngine.ts:2243,2359`), 장벽 밖 8 HP/s·이동 ×0.7·무적/실드 관통(`applyShrinkDamage`), 잠긴 타일 발사·디스카드·클러스터·리필 제외, 9칸 이하 발사 2칸 완화(`updateClusters`, `activeTiles <= 9 ? 2 : 3`, 스나이퍼 1칸).
+- 1.5: 스킬 안전 필터 — 아래 공통 헬퍼로 통일(이전에는 메서드별 인라인 `isTileLocked` 검사). 스피드스터 블링크 Y축 보드 경계 클램프 + 잠긴 타일 황색 변환 금지(`CharacterController.ts:456-470`, X 이동이 없어 열 보정은 해당 없음).
+- 2.3: OVERDRIVE SURGE 다음 발사 1회 후 해제(`GameEngine.ts:1498-1499,1692`), 결과 화면 통계(`GameOverModal.tsx:102,109,116`, `StageClearModal.tsx:122,129,136`), `playRefill` 리필 시점 연결(`GameEngine.ts:1850`).
+
+### 새로 구현한 것 — 1.5 공통 헬퍼 (`src/game/GridEngine.ts`, 동작 보존 리팩터)
+- `isTileActive(col, row)`: `!isTileLocked(...)`. `isTileLocked`가 경계 밖·붕괴 열·수축 잠금을 모두 포함하므로 활성은 그 부정이다. 단일 정의 지점.
+- `activeTiles()`: 보드 전체 활성 타일 좌표 목록 (행 우선 순서).
+- `filterActiveTiles(tiles)`: 좌표 목록에서 활성 타일만 남긴다 (경계 밖 좌표도 떨어진다).
+- 경유시킨 8개 메서드: `refillRow`, `refillRowWith`, `convertColumnToRed`, `convertRandomToRed`(후보 집합을 `activeTiles()`에서 구성, 행 우선 순서 유지), `convertTilesToRed`, `paintAdjacentDominant`, `swapTiles`, `contaminateAt`. `launchCluster`·`discardTile`·`update()`·`updateClusters()`는 코어 보드 동작이라 그대로 둔다.
+- 동작 보존 확인: 헬퍼 경유 전후 후보 집합이 동일하다(경계·붕괴·잠금 조건이 `isTileLocked`와 같은 집합). 테스트로 잠긴 타일 미변환·미리필 + 잠금 없는 보드에서 기존 동작 유지를 둘 다 확인했다.
+
+### 건드리지 않은 것 (지시대로)
+- 보스 각성 연출(화면 전체 붉은 플래시): 오라/링/텍스트/충격파/경고음 유지.
+- 배경 이미지 5장: 절차적 렌더링 유지.
+- AI 가중치 수치화: 행동으로 구현돼 있으므로 그대로 둔다.
+
+### 검증 (2026-11-21)
+- `npx tsc --noEmit` 통과, `npm run build` 통과(✓ built in 19.16s).
+- 로직 단위 테스트 28/28 통과 (`~/workspace/grid-shape-shooter/edge-case-2026-11-21.test.ts`, `npx tsx`로 실행): 헬퍼 기본(45칸/붕괴 35칸/수축 잠금 44칸/필터), 8개 메서드별 잠긴 타일 미변환·미리필(수축 잠금·붕괴 열·경계 밖) + 잠금 없는 보드 기존 동작 유지. 첫 실행에서 `paintAdjacentDominant` 2건 실패했는데 테스트가 우세색을 잘못 가정한 테스트 버그였고(타깃 5칸을 적색으로 채워 우세색이 적색이 됨), 보드를 청색으로 채워 수정한 뒤 28/28 통과. 게임 코드는 건드리지 않았다.
+- 기존 버그 수정 라운드 로직 테스트 19/19 재통과 (회귀 없음).
+- 미검증(브라우저 필요): 80초 문구·실드 링·블링크 실화면, 90초 이후 수축 실동작.
