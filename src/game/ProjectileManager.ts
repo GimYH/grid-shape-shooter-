@@ -60,8 +60,9 @@ export class ProjectileManager {
       baseHp *= 2;
     }
 
-    // Archetype modifier: Lancer vertical spear gets +1 cell HP
-    if (archetypeId === 'lancer' && cluster.shapeType === 'spear') {
+    // Archetype modifier: Lancer vertical spear gets +1 cell HP (the
+    // phase-2 awakened boss has the lancer passive too).
+    if ((archetypeId === 'lancer' || archetypeId === 'boss-awakened') && cluster.shapeType === 'spear') {
       baseHp += 1;
     }
 
@@ -222,9 +223,10 @@ export class ProjectileManager {
     // blue. The advantaged side deals double clash damage. Direct hits on
     // characters and cores are NOT affected.
     // Monochrome exception: a red projectile launched by Monochrome ignores
-    // blue's 2x advantage (the exchange stays 1x).
+    // blue's 2x advantage (the exchange stays 1x). The phase-2 awakened
+    // final boss has the same red immunity.
     const beats = (a: ShapeProjectile, b: ShapeProjectile): boolean => {
-      if (b.color === 'red' && b.archetypeId === 'monochrome') return false;
+      if (b.color === 'red' && (b.archetypeId === 'monochrome' || b.archetypeId === 'boss-awakened')) return false;
       return (
         (a.color === 'blue' && b.color === 'red') ||
         (a.color === 'red' && b.color === 'yellow') ||

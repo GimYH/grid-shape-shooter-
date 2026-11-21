@@ -4,6 +4,7 @@ import { GameHUD } from './components/GameHUD';
 import { TitleScreen } from './components/TitleScreen';
 import { GameOverModal } from './components/GameOverModal';
 import { StageClearModal } from './components/StageClearModal';
+import { StageSelectModal } from './components/StageSelectModal';
 import { CharacterSelectModal } from './components/CharacterSelectModal';
 import { OnlineRoomModal } from './components/OnlineRoomModal';
 import { GodotExportModal } from './components/GodotExportModal';
@@ -20,6 +21,7 @@ export default function App() {
   const [stageNum, setStageNum] = useState<number>(1);
   const [showGodotModal, setShowGodotModal] = useState<boolean>(false);
   const [showCharSelect, setShowCharSelect] = useState<boolean>(false);
+  const [showStageSelect, setShowStageSelect] = useState<boolean>(false);
   const [showOnlineModal, setShowOnlineModal] = useState<boolean>(false);
   const [initialRoomCode, setInitialRoomCode] = useState<string>('');
   const [, setTick] = useState(0);
@@ -81,7 +83,24 @@ export default function App() {
 
   const handleSelectMode = (mode: GameMode) => {
     setSelectedMode(mode);
-    setStageNum(mode === 'boss' ? 5 : 1);
+    if (mode === 'single') {
+      // v2.3: pick a stage first (unlocked stages only), then a character.
+      setShowStageSelect(true);
+      return;
+    }
+    setStageNum(mode === 'boss' ? 30 : 1);
+    setShowCharSelect(true);
+  };
+
+  const handleSelectStage = (stage: number) => {
+    setStageNum(stage);
+    setShowStageSelect(false);
+    setShowCharSelect(true);
+  };
+
+  const handleRestartCampaign = () => {
+    setSelectedMode('single');
+    setStageNum(1);
     setShowCharSelect(true);
   };
 
@@ -178,6 +197,13 @@ export default function App() {
           onStartOnlineBattle={handleStartOnlineBattle}
         />
 
+        {/* Stage Select (Single Campaign, v2.3) */}
+        <StageSelectModal
+          isOpen={showStageSelect}
+          onSelectStage={handleSelectStage}
+          onClose={() => setShowStageSelect(false)}
+        />
+
         {/* Offline Character Selection Screen */}
         <CharacterSelectModal
           isOpen={showCharSelect}
@@ -231,8 +257,9 @@ export default function App() {
           <StageClearModal
             stageNum={engineRef.current.currentStage}
             stats={engineRef.current.stats}
+            runActive={!!engineRef.current.campaignRun && !engineRef.current.campaignRun.broken}
             onNextStage={handleNextStage}
-            onRestartCampaign={() => handleSelectMode('single')}
+            onRestartCampaign={handleRestartCampaign}
             onReturnToTitle={handleReturnToTitle}
           />
         )}

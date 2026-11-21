@@ -4,11 +4,12 @@ import { AIController } from './AIController';
 import { ProjectileManager } from './ProjectileManager';
 import { ParticleSystem } from './ParticleSystem';
 import { ARCHETYPES } from './archetypes';
+import { STAGES, SECTOR_THEMES } from './stages';
 import { CoreState, ShrinkPhase, ShrinkRect, TileColor } from '../types/game';
 
-// Boss skill cycle colors for the OMNI-OVERLORD core (matches the 5-skill
-// rotation: Crimson, Tide, Beam, Chroma, Overdrive).
-const BOSS_SKILL_COLORS = ['#FF0055', '#33CCFF', '#00FFAA', '#FF8800', '#FF0000'];
+// Boss skill cycle colors for the OMNI-OVERLORD core (7 skills: Crimson,
+// Tide, Beam, Chroma, Overdrive, Quantum Rewrite, Phase Blink).
+const BOSS_SKILL_COLORS = ['#FF0055', '#33CCFF', '#00FFAA', '#FF8800', '#FF0000', '#B57EDC', '#FFCC00'];
 
 export class CanvasRenderer {
   public canvasWidth = 1920;
@@ -28,6 +29,10 @@ export class CanvasRenderer {
 
   public playerOriginX = 0;
   public playerOriginY = 656;
+
+  // v2.3: current campaign stage (1..30). Set by GameEngine on battle
+  // start; the background tints by sector, even stages and boss stages.
+  public stageId: number = 1;
 
   constructor() {
     const totalGridW = GRID_COLS * this.cellW + (GRID_COLS - 1) * this.gap;
@@ -129,8 +134,33 @@ export class CanvasRenderer {
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
 
-    // Subtle perspective grid lines
-    ctx.strokeStyle = 'rgba(40, 70, 110, 0.12)';
+    // v2.3: sector accent glow (all 6 stages of a sector share one theme).
+    const stage = STAGES[Math.max(0, Math.min(this.stageId - 1, STAGES.length - 1))];
+    const theme = SECTOR_THEMES[stage?.sector ?? 1];
+    if (theme) {
+      const glow = ctx.createRadialGradient(
+        this.canvasWidth / 2, 0, 50,
+        this.canvasWidth / 2, 0, 900
+      );
+      glow.addColorStop(0, theme.accent + '26');
+      glow.addColorStop(1, theme.accent + '00');
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+    }
+    // Even stages and sector/final bosses get a mood tint overlay.
+    if (stage?.isFinalBoss) {
+      ctx.fillStyle = 'rgba(120, 10, 40, 0.22)';
+      ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+    } else if (stage?.isSectorBoss) {
+      ctx.fillStyle = 'rgba(90, 20, 90, 0.20)';
+      ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+    } else if (this.stageId % 2 === 0) {
+      ctx.fillStyle = 'rgba(20, 50, 110, 0.14)';
+      ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+    }
+
+    // Subtle perspective grid lines (sector-tinted)
+    ctx.strokeStyle = theme?.grid ?? 'rgba(40, 70, 110, 0.12)';
     ctx.lineWidth = 1;
 
     const gridSize = 48;
@@ -788,7 +818,7 @@ export class CanvasRenderer {
     ctx: CanvasRenderingContext2D,
     archetypeId: string,
     radius: number,
-    color: string,
+    color: string | CanvasGradient,
     opts: {
       time: number;
       skillReady?: boolean;
@@ -814,7 +844,8 @@ export class CanvasRenderer {
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     ctx.fillStyle = fill;
-    ctx.shadowColor = flash ? '#FFFFFF' : color;
+    // shadowColor takes a plain color string; gradients fall back to white.
+    ctx.shadowColor = flash ? '#FFFFFF' : typeof color === 'string' ? color : '#FFFFFF';
     ctx.shadowBlur = flash ? 30 : 16;
 
     const core = (x: number, y: number, r: number) => {
@@ -1112,6 +1143,44 @@ export class CanvasRenderer {
     ctx.restore();
   }
 
+  // v2.3 hybrid rendering: two archetype vector shapes layered — the
+  // first at near-full size filled with a two-color gradient, the second
+  // smaller on top in its own color. No separate art needed.
+  private drawHybridFighterShape(
+    ctx: CanvasRenderingContext2D,
+    archA: string,
+    archB: string,
+    radius: number,
+    opts: {
+      time: number;
+      skillReady?: boolean;
+      overdrive?: boolean;
+      shield?: boolean;
+      tileColor?: TileColor | null;
+      grabbedColor?: TileColor | null;
+      spearBoost?: boolean;
+      wallBoost?: boolean;
+      speedBoost?: boolean;
+      flash?: boolean;
+      bossSkillColor?: string;
+    }
+  ) {
+    const grad = ctx.createLinearGradient(-radius, -radius, radius, radius);
+    grad.addColorStop(0, ARCHETYPES[archA as keyof typeof ARCHETYPES]?.color ?? '#FF3366');
+    grad.addColorStop(1, ARCHETYPES[archB as keyof typeof ARCHETYPES]?.color ?? '#33CCFF');
+    this.drawFighterShape(ctx, archA, radius * 0.95, grad, opts);
+    ctx.save();
+    ctx.globalAlpha = 0.92;
+    this.drawFighterShape(
+      ctx,
+      archB,
+      radius * 0.58,
+      ARCHETYPES[archB as keyof typeof ARCHETYPES]?.color ?? '#33CCFF',
+      opts
+    );
+    ctx.restore();
+  }
+
   private pointInRect(x: number, y: number, rect: ShrinkRect | null): boolean {
     return !!rect && x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
   }
@@ -1124,8 +1193,24 @@ export class CanvasRenderer {
       this.drawFighterShape(ctx, 'boss', R, '#FF0055', {
         time,
         flash: enemy.hitFlashTimer > 0,
-        overdrive: enemy.isBossOverdrive,
-        bossSkillColor: BOSS_SKILL_COLORS[enemy.bossSkillCycle % 5],
+        overdrive: enemy.isBossOverdrive || enemy.awakened,
+        bossSkillColor: BOSS_SKILL_COLORS[enemy.bossSkillCycle % BOSS_SKILL_COLORS.length],
+      });
+    } else if (enemy.archetypes.length >= 2) {
+      // v2.3 hybrid: two signature shapes layered with a two-color gradient.
+      this.drawHybridFighterShape(ctx, enemy.archetypes[0], enemy.archetypes[1], R, {
+        time,
+        flash: enemy.hitFlashTimer > 0,
+        overdrive: enemy.overdriveActive,
+        shield: enemy.shield > 0,
+      });
+    } else if (enemy.archetypes.length === 1) {
+      const id = enemy.archetypes[0];
+      this.drawFighterShape(ctx, id, R, ARCHETYPES[id].color, {
+        time,
+        flash: enemy.hitFlashTimer > 0,
+        overdrive: enemy.overdriveActive,
+        shield: enemy.shield > 0,
       });
     } else {
       this.drawFighterShape(ctx, 'drone', R, '#FF3366', { time, flash: enemy.hitFlashTimer > 0 });
@@ -1134,16 +1219,35 @@ export class CanvasRenderer {
 
     ctx.save();
     ctx.translate(enemy.x, enemy.y);
-    // Boss aura ring (pulsing gold, red while overdriving)
+    // Boss aura ring (pulsing gold, red while overdriving; phase-2
+    // awakening turns it crimson with a faster pulse + crack ring).
     if (enemy.isBoss) {
-      ctx.strokeStyle = enemy.isBossOverdrive ? '#FF0000' : 'rgba(255, 180, 0, 0.8)';
-      ctx.lineWidth = 4;
+      const awakened = enemy.awakened;
+      ctx.strokeStyle = awakened ? '#FF0033' : enemy.isBossOverdrive ? '#FF0000' : 'rgba(255, 180, 0, 0.8)';
+      ctx.lineWidth = awakened ? 5 : 4;
       ctx.beginPath();
-      ctx.arc(0, 0, R + 12 + Math.sin(time * 12) * 5, 0, Math.PI * 2);
+      ctx.arc(0, 0, R + 12 + Math.sin(time * (awakened ? 20 : 12)) * 5, 0, Math.PI * 2);
       ctx.stroke();
+      if (awakened) {
+        ctx.strokeStyle = 'rgba(255, 0, 51, 0.5)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 8]);
+        ctx.lineDashOffset = -time * 30;
+        ctx.beginPath();
+        ctx.arc(0, 0, R + 20 + Math.sin(time * 20) * 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     } else {
-      ctx.strokeStyle = '#FF3366';
-      ctx.lineWidth = 3;
+      // Ring in the enemy's primary archetype color (red for the tutorial
+      // drone, gold for sector bosses).
+      const ringColor = enemy.isSectorBoss
+        ? '#FFD700'
+        : enemy.archetypes.length > 0
+          ? ARCHETYPES[enemy.archetypes[0]].color
+          : '#FF3366';
+      ctx.strokeStyle = ringColor;
+      ctx.lineWidth = enemy.isSectorBoss ? 4 : 3;
       ctx.beginPath();
       ctx.arc(0, 0, R + 6, 0, Math.PI * 2);
       ctx.stroke();

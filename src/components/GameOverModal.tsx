@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { GameStats } from '../types/game';
+import { loadCampaignProgress, formatClearTime } from '../game/campaign';
 import { RotateCcw, Trophy, Skull, Zap, Swords } from 'lucide-react';
 
 interface GameOverModalProps {
@@ -11,6 +12,11 @@ interface GameOverModalProps {
 
 export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, onRestart, onReturnToTitle }) => {
   const isVictory = status === 'victory';
+  // v2.3: a career no-continue badge, if one was ever earned.
+  const noContinue = useMemo(
+    () => (isVictory ? loadCampaignProgress().noContinue : null),
+    [isVictory]
+  );
 
   return (
     <div className="absolute inset-0 z-40 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 font-['Chakra_Petch'] select-none">
@@ -40,6 +46,14 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, onR
             ? '상대 진영을 격파하고 그리드 지배권을 확보했습니다.'
             : '플레이어 HP가 소진되었습니다. 다시 도전하거나 전술을 재정비하세요.'}
         </p>
+
+        {/* v2.3: no-continue badge (career record) */}
+        {isVictory && noContinue && (
+          <div className="w-full flex items-center justify-center gap-2 mb-4 px-3 py-2 rounded-2xl bg-amber-500/15 border border-amber-400/60 text-amber-300 text-xs font-bold break-keep">
+            <Trophy className="w-4 h-4 shrink-0" />
+            노컨티뉴 클리어 달성! (1~30스테이지 · {formatClearTime(noContinue.timeSec)})
+          </div>
+        )}
 
         {/* Battle Stats Grid */}
         <div className="grid grid-cols-2 gap-3 w-full mb-6 text-left">

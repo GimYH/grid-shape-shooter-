@@ -121,7 +121,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           >
             <Play className="w-7 h-7 text-cyan-300 group-hover:scale-110 transition-transform mb-1.5 fill-cyan-300/30" />
             <span className="text-sm font-bold tracking-wide">싱글 캠페인</span>
-            <span className="text-[11px] text-cyan-300 mt-0.5">5 Stages & Final Boss</span>
+            <span className="text-[11px] text-cyan-300 mt-0.5">30 Stages & Final Boss</span>
           </button>
 
           {/* 2. Online 1:1 Link Invite Battle (Highlighted!) */}
@@ -154,7 +154,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           >
             <Crown className="w-7 h-7 text-rose-400 group-hover:scale-110 transition-transform mb-1.5" />
             <span className="text-sm font-bold tracking-wide">최종 보스전</span>
-            <span className="text-[11px] text-rose-300 mt-0.5">OMNI-OVERLORD [HP 200]</span>
+            <span className="text-[11px] text-rose-300 mt-0.5">OMNI-OVERLORD [HP 250]</span>
           </button>
         </div>
 
