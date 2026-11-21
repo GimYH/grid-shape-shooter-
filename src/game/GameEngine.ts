@@ -8,6 +8,14 @@ import { soundManager } from '../audio/soundManager';
 import { ArchetypeId, Cluster, CoreState, GameMode, GameStats, ShrinkPhase, ShrinkRect, SkillEffect } from '../types/game';
 import { ARCHETYPES } from './archetypes';
 import { STAGES } from './stages';
+import {
+  startCampaignRun,
+  markRunBroken,
+  recordStageClear,
+  tryRecordNoContinue,
+  CampaignRunState,
+} from './campaign';
+import { NoContinueRecord } from '../types/game';
 import { networkManager, NetworkAction } from './NetworkManager';
 
 export type GameStatus =
@@ -141,6 +149,12 @@ export class GameEngine {
     gameDuration: 0,
     currentStage: 1,
   };
+
+  // v2.3 campaign run: a live 1..30 no-continue attempt. A fresh run starts
+  // at stage 1; a defeat (or leaving for the title) breaks/abandons it.
+  // The victory modal reads lastNoContinue when the run completes.
+  public campaignRun: CampaignRunState | null = null;
+  public lastNoContinue: NoContinueRecord | null = null;
 
   private animationFrameId: number | null = null;
   private lastTime: number = 0;
@@ -562,12 +576,29 @@ export class GameEngine {
     this.gameTime = 0;
 
     if (mode === 'boss') {
-      this.currentStage = 5;
+      this.currentStage = 30;
     } else if (mode === 'multi') {
       this.currentStage = 1;
     } else {
       this.currentStage = stage;
     }
+
+    // v2.3 campaign run: a fresh no-continue run starts at stage 1.
+    // Jumping to a later stage (or boss rush) abandons any active run;
+    // advanceToNextStage keeps the run alive.
+    if (mode === 'single') {
+      if (stage === 1) {
+        this.campaignRun = startCampaignRun(1);
+      } else if (!this.campaignRun || this.campaignRun.startStage !== 1) {
+        this.campaignRun = null;
+      }
+    } else {
+      this.campaignRun = null;
+    }
+    this.lastNoContinue = null;
+
+    // v2.3: renderer tints the background by sector/stage.
+    this.renderer.stageId = this.currentStage;
 
     this.comboCount = 0;
     this.comboTimer = 0;
@@ -608,7 +639,8 @@ export class GameEngine {
     } else {
       this.player2 = null;
       this.enemy.reset(eStartX, eStartY, this.currentStage);
-      if (this.currentStage === 5) {
+      const cfg = STAGES[this.currentStage - 1];
+      if (cfg.isFinalBoss || cfg.isSectorBoss) {
         soundManager.playBossWarning();
       }
     }
@@ -988,7 +1020,7 @@ export class GameEngine {
   }
 
   public advanceToNextStage() {
-    this.currentStage = Math.min(5, this.currentStage + 1);
+    this.currentStage = Math.min(30, this.currentStage + 1);
     this.status = 'playing';
     this.comboCount = 0;
     this.comboTimer = 0;
@@ -996,6 +1028,7 @@ export class GameEngine {
     this.combo2Timer = 0;
     this.combo2Max = 0;
     this.resetCores();
+    this.renderer.stageId = this.currentStage;
 
     this.playerBoard.reset();
     this.enemyBoard.reset();
@@ -1010,7 +1043,9 @@ export class GameEngine {
     const eStartY = this.renderer.enemyOriginY + (GRID_ROWS * (this.renderer.cellH + this.renderer.gap)) / 2;
     this.enemy.reset(eStartX, eStartY, this.currentStage);
 
-    if (this.currentStage === 5) {
+    if (this.currentStage === 30) {
+      soundManager.playBossWarning();
+    } else if (STAGES[this.currentStage - 1].isSectorBoss) {
       soundManager.playBossWarning();
     } else {
       soundManager.playSwitch();
@@ -1244,7 +1279,42 @@ export class GameEngine {
 
   // AI launch handler
   private handleEnemyLaunch = (cluster: Cluster) => {
-    const overdrive = this.enemy.isBossOverdrive;
+    const aiArchs = this.enemy.archetypes;
+    const bypass = this.enemy.bypassAbsorb;
+    this.enemy.bypassAbsorb = false;
+
+    // v2.3 monochrome passive: a non-red cluster evaporates into shield
+    // instead of launching (mirrors the player rule), unless this launch
+    // is a wave core-defense counter.
+    if (aiArchs.includes('monochrome') && cluster.color !== 'red' && !bypass) {
+      this.enemyBoard.launchCluster(cluster, 0.5);
+      this.enemy.shield = Math.min(40, this.enemy.shield + 10);
+      soundManager.playSkill('monochrome');
+      this.particleSystem.addFloatingText(this.enemy.x, this.enemy.y - 30, '+10 SHIELD ABSORBED!', '#33CCFF', 16);
+      this.particleSystem.addShockwave(this.enemy.x, this.enemy.y, 70, '#33CCFF');
+      this.triggerStateUpdate();
+      return;
+    }
+
+    // v2.3: the projectile carries the AI's archetype identity so the
+    // passives apply (lancer spear speed/HP, wave wall speed, monochrome
+    // red damage + clash immunity, sniper core 50%). Phase-2 awakened
+    // final-boss projectiles get 'boss-awakened' (red clash immunity +
+    // spear +1 HP, no damage x2).
+    let arch = 'standard';
+    if (this.enemy.isFinalBoss && this.enemy.awakened) {
+      arch = 'boss-awakened';
+    } else if (cluster.color === 'red' && aiArchs.includes('monochrome')) {
+      arch = 'monochrome';
+    } else if (cluster.shapeType === 'spear' && aiArchs.includes('lancer')) {
+      arch = 'lancer';
+    } else if (cluster.shapeType === 'wall' && aiArchs.includes('wave')) {
+      arch = 'wave';
+    } else if (aiArchs.length === 1) {
+      arch = aiArchs[0];
+    }
+
+    const overdrive = this.enemy.isBossOverdrive || this.enemy.overdriveActive;
     this.projectileMgr.createProjectile(
       'enemy',
       cluster,
@@ -1253,14 +1323,19 @@ export class GameEngine {
       this.renderer.cellW,
       this.renderer.cellH,
       this.renderer.gap,
-      'standard',
+      arch,
       overdrive,
       this.isFrontlineLaunch('enemy', cluster)
     );
     this.enemyBoard.launchCluster(cluster);
+    // v2.3 painter passive: 10% chance to paint the foot cross dominant.
+    if (aiArchs.includes('painter') && Math.random() < 0.1) {
+      this.enemyBoard.paintAdjacentDominant(this.enemy.currentCol, this.enemy.currentRow);
+    }
     // v2.2: boss overdrive lasts exactly one launch (old bug: stayed on
-    // until the battle ended).
-    if (overdrive) this.enemy.isBossOverdrive = false;
+    // until the battle ended). The monochrome skill overdrive is the same.
+    if (this.enemy.isBossOverdrive) this.enemy.isBossOverdrive = false;
+    if (this.enemy.overdriveActive) this.enemy.overdriveActive = false;
     soundManager.playLaunch(cluster.color, cluster.tiles.length, cluster.shapeType);
     this.particleSystem.emitLaunchParticles(this.enemy.x, this.enemy.y, '#FF3366');
     this.particleSystem.addShockwave(this.enemy.x, this.enemy.y, 60, '#FF3366');
@@ -1381,8 +1456,16 @@ export class GameEngine {
     const playerRefilled = this.playerBoard.update(dt, playerCDMult, isSniper);
 
     const enemyCDMult =
-      (this.player2?.archetypeId === 'speedster' ? 1.5 : 1.0) * (this.enemyCore.collapsed ? 1.3 : 1.0);
-    const isEnemySniper = this.player2?.archetypeId === 'sniper';
+      (this.player2?.archetypeId === 'speedster' ||
+      (this.mode !== 'multi' && this.enemy.archetypes.includes('speedster'))
+        ? 1.5
+        : 1.0) * (this.enemyCore.collapsed ? 1.3 : 1.0);
+    // v2.3: offline, the enemy board uses the AI's archetypes (sniper
+    // 1-2 cell launches, speedster refill); online/local 2P it uses P2's.
+    const isEnemySniper =
+      this.mode === 'multi'
+        ? this.player2?.archetypeId === 'sniper'
+        : this.enemy.archetypes.includes('sniper');
     const enemyRefilled = this.enemyBoard.update(dt, enemyCDMult, isEnemySniper);
 
     this.refillSoundTimer -= dt;
@@ -1475,6 +1558,10 @@ export class GameEngine {
         // v2.2: during the 80-90s shrink warning the AI heads for the
         // center so it is not isolated in a corner.
         this.enemy.moveToCenter = this.shrinkPhase === 'warning';
+        // v2.3: feed the boss awakening inputs and the core-collapse
+        // crisis flag (launch wait -20% in the last stand).
+        this.enemy.bossCoreHp = this.enemyCore.hp;
+        this.enemy.coreCrisis = this.enemyCore.collapsed;
         this.enemy.update(
           dt,
           this.renderer.enemyOriginX,
@@ -1498,7 +1585,8 @@ export class GameEngine {
               this.renderer.gap
             );
             soundManager.playLaunch('red', 1, 'spear');
-          }
+          },
+          { col: this.player.currentCol, row: this.player.currentRow }
         );
       }
     }
@@ -1556,16 +1644,23 @@ export class GameEngine {
     } else {
       // Single Mode or Boss Mode
       if ((this.enemy.hp <= 0 || this.enemyCore.hp <= 0) && this.status === 'playing') {
-        if (this.mode === 'single' && this.currentStage < 5) {
+        if (this.mode === 'single' && this.currentStage < 30) {
           this.status = 'stage_clear';
+          recordStageClear(this.currentStage);
           soundManager.playStageClear();
         } else {
+          // Final boss beaten (campaign stage 30 or boss rush).
           this.status = 'victory';
+          recordStageClear(30);
+          this.lastNoContinue = tryRecordNoContinue(this.campaignRun);
+          this.campaignRun = null;
           soundManager.playVictory();
         }
         this.triggerStateUpdate();
       } else if ((this.player.hp <= 0 || this.playerCore.hp <= 0) && this.status === 'playing') {
         this.status = 'defeat';
+        // A defeat breaks the live no-continue run (retrying = continue).
+        if (this.campaignRun) this.campaignRun = markRunBroken(this.campaignRun);
         soundManager.playDefeat();
         this.triggerStateUpdate();
       }
@@ -1841,6 +1936,7 @@ export class GameEngine {
     }
     this.status = 'title';
     this.isOnline = false;
+    this.campaignRun = null;
     this.playerBoard.reset();
     this.enemyBoard.reset();
     this.projectileMgr.clear();
@@ -1878,7 +1974,7 @@ export class GameEngine {
     } else if (this.mode === 'single') {
       this.startGame('single', this.currentStage, this.player.archetypeId);
     } else if (this.mode === 'boss') {
-      this.startGame('boss', 5, this.player.archetypeId);
+      this.startGame('boss', 30, this.player.archetypeId);
     }
   }
 

@@ -47,7 +47,7 @@ export const CharacterSelectModal: React.FC<CharacterSelectModalProps> = ({
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
               {gameMode === 'single'
-                ? `CAMPAIGN MISSION · ${stageInfo?.nameKo} (STAGE ${stageNum}/5)`
+                ? `CAMPAIGN MISSION · ${stageInfo?.nameKo} (STAGE ${stageNum}/30)`
                 : gameMode === 'boss'
                 ? 'BOSS RUSH · OMNI-OVERLORD FINAL SHOWDOWN'
                 : 'LOCAL 2-PLAYER VERSUS DUEL (P1 VS P2)'}

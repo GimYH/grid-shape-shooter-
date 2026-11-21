@@ -117,19 +117,40 @@ export interface Shockwave {
 
 export type GameMode = 'single' | 'multi' | 'boss';
 
+export type AiLevel = 1 | 2 | 3 | 4 | 5;
+
+// v2.3: 30-stage campaign. Every stage is data-only: AIController reads
+// the config (archetypes, aiLevel, hp, coreHp) directly, and the
+// difficulty numbers (reaction interval, move speed, launch wait) are
+// derived from aiLevel by linear interpolation in stages.ts.
 export interface StageConfig {
-  stage: number;
+  id: number; // 1..30
+  sector: 1 | 2 | 3 | 4 | 5;
   name: string;
   nameKo: string;
   desc: string;
-  enemyHp: number;
-  aiReactionTime: number; // seconds
-  aiMoveSpeed: number;
-  aiLaunchWait: number; // seconds before the AI may launch again
-  aiMinClusterSize: number;
-  coreHp: number; // rear core HP (250, boss 350)
+  // 0 = tutorial (no archetype), 1 = single, 2 = hybrid, 7 = final boss.
+  archetypes: ArchetypeId[];
+  hp: number;
+  coreHp: number; // rear core HP
+  aiLevel: AiLevel;
+  isSectorBoss?: boolean;
+  isFinalBoss?: boolean;
+  // Legacy compat: true only for the final boss (stage 30).
   isBoss: boolean;
+  // Final boss skill cadence base (seconds); phase 2 shortens it.
   bossSkillInterval?: number;
+}
+
+// Campaign progress (v2.3, persisted in localStorage).
+export interface NoContinueRecord {
+  timeSec: number; // total clear time for the 1..30 run
+  clearedAt: string; // ISO date
+}
+
+export interface CampaignProgress {
+  maxCleared: number; // 0..30
+  noContinue: NoContinueRecord | null;
 }
 
 // Rear core state (v2.2): one per side. `collapsed` turns on when the core

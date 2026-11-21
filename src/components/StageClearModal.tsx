@@ -6,6 +6,7 @@ import { Trophy, ArrowRight, RotateCcw, Sparkles, Skull, Swords } from 'lucide-r
 interface StageClearModalProps {
   stageNum: number;
   stats: GameStats;
+  runActive?: boolean;
   onNextStage: () => void;
   onRestartCampaign: () => void;
   onReturnToTitle: () => void;
@@ -14,12 +15,15 @@ interface StageClearModalProps {
 export const StageClearModal: React.FC<StageClearModalProps> = ({
   stageNum,
   stats,
+  runActive,
   onNextStage,
   onRestartCampaign,
   onReturnToTitle,
 }) => {
-  const isFinalBossBeaten = stageNum >= 5;
+  const isFinalBossBeaten = stageNum >= 30;
   const nextStageInfo = STAGES[Math.min(stageNum, STAGES.length - 1)];
+  const nextIsFinalBoss = nextStageInfo.isFinalBoss;
+  const nextIsSectorBoss = nextStageInfo.isSectorBoss;
 
   return (
     <div className="absolute inset-0 z-40 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 font-['Chakra_Petch'] select-none">
@@ -39,25 +43,39 @@ export const StageClearModal: React.FC<StageClearModalProps> = ({
             : `적 방어선을 돌파하였습니다. 스테이지 ${stageNum + 1}로 진격할 준비가 되었습니다.`}
         </p>
 
+        {/* v2.3: no-continue run indicator */}
+        {runActive && !isFinalBossBeaten && (
+          <div className="w-full flex items-center justify-center gap-2 mb-4 px-3 py-2 rounded-2xl bg-amber-500/15 border border-amber-400/60 text-amber-300 text-xs font-bold break-keep">
+            <Sparkles className="w-4 h-4 shrink-0" />
+            노컨티뉴 진행 중 — 패배 없이 1스테이지부터 계속 도전 중입니다
+          </div>
+        )}
+
         {/* Next Stage Warning / Preview */}
         {!isFinalBossBeaten && nextStageInfo && (
           <div
             className={`w-full p-3.5 rounded-2xl border mb-6 text-left ${
-              nextStageInfo.isBoss
+              nextIsFinalBoss
                 ? 'bg-rose-950/40 border-rose-500/60 shadow-lg shadow-rose-950/50'
+                : nextIsSectorBoss
+                ? 'bg-purple-950/40 border-purple-500/60 shadow-lg shadow-purple-950/50'
                 : 'bg-slate-950/80 border-slate-800'
             }`}
           >
             <div className="flex items-center justify-between mb-1">
               <span
                 className={`text-[11px] font-bold tracking-wider ${
-                  nextStageInfo.isBoss ? 'text-rose-400' : 'text-cyan-400'
+                  nextIsFinalBoss ? 'text-rose-400' : nextIsSectorBoss ? 'text-purple-300' : 'text-cyan-400'
                 }`}
               >
-                {nextStageInfo.isBoss ? '⚠️ WARNING: NEXT IS FINAL BOSS' : 'NEXT TARGET ASSIGNMENT'}
+                {nextIsFinalBoss
+                  ? '⚠️ WARNING: NEXT IS FINAL BOSS'
+                  : nextIsSectorBoss
+                  ? '⚠️ WARNING: NEXT IS SECTOR BOSS'
+                  : 'NEXT TARGET ASSIGNMENT'}
               </span>
               <span className="text-xs font-mono font-bold text-amber-300">
-                HP {nextStageInfo.enemyHp}
+                HP {nextStageInfo.hp}
               </span>
             </div>
             <h3 className="text-sm font-bold text-white mb-1">{nextStageInfo.nameKo}</h3>

@@ -336,7 +336,12 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           {enemy.isBoss && !isMulti ? (
             <span className="flex items-center gap-1.5 text-xs font-black tracking-wider text-rose-400 uppercase animate-pulse whitespace-nowrap">
               <Crown className="w-4 h-4 text-amber-400" />
-              FINAL BOSS: OMNI-OVERLORD [HP 200]
+              FINAL BOSS: OMNI-OVERLORD [HP {enemy.maxHp}]
+            </span>
+          ) : enemy.isSectorBoss && !isMulti ? (
+            <span className="flex items-center gap-1.5 text-xs font-black tracking-wider text-purple-300 uppercase whitespace-nowrap">
+              <Crown className="w-4 h-4 text-purple-300" />
+              섹터 보스: {stageInfo?.nameKo || `STAGE ${engine.currentStage}`}
             </span>
           ) : isMulti ? (
             <span className="flex items-center gap-1.5 text-xs font-black tracking-wider text-amber-300 uppercase whitespace-nowrap">
@@ -346,7 +351,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           ) : (
             <span className="text-xs font-bold tracking-widest text-cyan-400 uppercase flex items-center gap-1.5 whitespace-nowrap">
               <Sparkles className="w-3.5 h-3.5 text-cyan-300 animate-pulse" />
-              {stageInfo?.nameKo || `STAGE ${engine.currentStage}/5`}
+              {stageInfo?.nameKo || `STAGE ${engine.currentStage}/30`}
             </span>
           )}
         </div>
@@ -632,6 +637,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                           ? 'PLAYER 2 (TOP)'
                           : enemy.isBoss
                           ? 'OMNI-OVERLORD [BOSS]'
+                          : enemy.isSectorBoss
+                          ? `섹터 보스 · STAGE ${engine.currentStage}`
                           : `STAGE ${engine.currentStage} HOSTILE`}
                       </span>
                     </div>
@@ -674,7 +681,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                   <span>{enemy.isBoss ? 'BOSS TRAIT:' : 'TACTICAL AI:'}</span>
                   <span className="text-amber-300 font-semibold text-right break-keep">
                     {enemy.isBoss
-                      ? '5종 스킬 순환: 크림슨 스트라이크 · 타이드 플러드 · 옴니 빔 · 크로마 퓨전 · 오버드라이브 서지'
+                      ? '7종 스킬 순환: 크림슨 스트라이크 · 타이드 플러드 · 옴니 빔 · 크로마 퓨전 · 오버드라이브 서지 · 퀀텀 리라이트 · 페이즈 블링크'
+                      : enemy.archetypes.length >= 2
+                      ? '하이브리드 AI: 두 직업 패시브 + 스킬 교차 사용'
                       : engine.currentStage >= 3
                       ? 'Dynamic Evasion & Intercept + Core Defense'
                       : 'Basic Cluster Strike'}
