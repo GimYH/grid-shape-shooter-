@@ -9,11 +9,13 @@ import { CharacterSelectModal } from './components/CharacterSelectModal';
 import { OnlineRoomModal } from './components/OnlineRoomModal';
 import { GodotExportModal } from './components/GodotExportModal';
 import { OnscreenControls } from './components/OnscreenControls';
+import { MobileJoystickControls } from './components/MobileJoystickControls';
 import { ArchetypeId, GameMode } from './types/game';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<GameEngine | null>(null);
 
   const [gameStatus, setGameStatus] = useState<GameStatus>('title');
@@ -60,6 +62,15 @@ export default function App() {
 
   // 16:9 Responsive scale calculation
   const [scale, setScale] = useState(1);
+  // Mobile portrait joystick: shown only when the viewport is taller than
+  // wide (ratio only, touch device or not). Rotations/resizes switch it
+  // immediately. stageBottom is the measured bottom edge of the 16:9
+  // stage container, used to park the controls in the letterbox band
+  // below the stage instead of on top of the canvas.
+  const [isPortrait, setIsPortrait] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.innerHeight > window.innerWidth
+  );
+  const [stageBottom, setStageBottom] = useState(0);
 
   useEffect(() => {
     const handleResize = () => {
@@ -74,12 +85,30 @@ export default function App() {
       const scaleY = windowH / targetH;
       const nextScale = Math.min(scaleX, scaleY);
       setScale(nextScale);
+      setIsPortrait(windowH > windowW);
     };
 
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  // Measure the stage container's actual position (transform-aware) so
+  // the mobile controls sit in the real letterbox band below it.
+  useEffect(() => {
+    const measure = () => {
+      if (stageRef.current) {
+        setStageBottom(stageRef.current.getBoundingClientRect().bottom);
+      }
+    };
+    measure();
+    const raf = requestAnimationFrame(measure);
+    window.addEventListener('resize', measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', measure);
+    };
+  }, [scale, isPortrait, gameStatus]);
 
   const handleSelectMode = (mode: GameMode) => {
     setSelectedMode(mode);
@@ -163,6 +192,7 @@ export default function App() {
     >
       {/* 16:9 Letterboxed Game Container */}
       <div
+        ref={stageRef}
         className="relative shadow-2xl bg-slate-950 overflow-hidden"
         style={{
           width: '1920px',
@@ -223,8 +253,9 @@ export default function App() {
               onRestart={handleRestart}
               onReturnToTitle={handleReturnToTitle}
             />
-            {/* Virtual Controls for Touch Screens */}
-            <OnscreenControls engine={engineRef.current} />
+            {/* Virtual Controls for Touch Screens (landscape/tablet only;
+                portrait uses the joystick controls below the stage) */}
+            {!isPortrait && <OnscreenControls engine={engineRef.current} />}
           </>
         )}
 
@@ -280,6 +311,17 @@ export default function App() {
           onClose={() => setShowGodotModal(false)}
         />
       </div>
+
+      {/* Mobile portrait joystick controls: rendered OUTSIDE the scaled
+          stage container, in the letterbox band below the stage, so the
+          buttons stay full-size on a phone. Portrait only; landscape and
+          desktop keep the keyboard + OnscreenControls above. */}
+      {(gameStatus === 'playing' || gameStatus === 'paused') &&
+        engineRef.current &&
+        isPortrait &&
+        stageBottom > 0 && (
+          <MobileJoystickControls engine={engineRef.current} stageBottom={stageBottom} />
+        )}
     </div>
   );
 }
