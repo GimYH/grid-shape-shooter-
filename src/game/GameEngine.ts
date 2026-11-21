@@ -17,6 +17,22 @@ import {
 } from './campaign';
 import { NoContinueRecord } from '../types/game';
 import { networkManager, NetworkAction } from './NetworkManager';
+import {
+  ROYALE_GANGUP_REFILL_MULT,
+  ROYALE_GANGUP_THRESHOLD,
+  ROYALE_INCOMING_WARNING_SEC,
+  ROYALE_KO_CORE_REWARD,
+  ROYALE_KO_DMG_BUFF_MAX,
+  ROYALE_KO_DMG_BUFF_STEP,
+  ROYALE_KO_HP_REWARD,
+  ROYALE_MAX_PLAYERS,
+  ROYALE_PORTAL_Y,
+  RoyaleIncomingPacket,
+  RoyaleKoPacket,
+  RoyalePlayerInfo,
+  RoyaleStatusPacket,
+  RoyaleTargetMode,
+} from './royale';
 
 export type GameStatus =
   | 'title'
@@ -160,6 +176,27 @@ export class GameEngine {
   public campaignRun: CampaignRunState | null = null;
   public lastNoContinue: NoContinueRecord | null = null;
 
+  // --- GRID ROYALE (v2.4) -------------------------------------------------
+  // No board tiles or 20 Hz movement are synced; only the 4 lightweight
+  // packets (royale_fire / royale_incoming / royale_status / royale_ko).
+  public royalePlayers: RoyalePlayerInfo[] = [];
+  public royaleMyId: string | null = null;
+  public royaleTargetMode: RoyaleTargetMode = 'random';
+  public royaleTargetingIds: string[] = [];
+  public royaleKos: number = 0;
+  public royaleDamageBuff: number = 0; // +10% per KO, max 5 stacks
+  public royaleKillFeed: { text: string; color: string }[] = [];
+  public royaleRank: number | null = null;
+  public royaleAliveCount: number = 0;
+  public royaleEliminated: boolean = false;
+  // Columns with an incoming projectile warning (spawn in 0.4s).
+  public royaleWarnings: { col: number; until: number }[] = [];
+  public lastHitBy: string | null = null;
+  private royalePendingIncoming: { packet: RoyaleIncomingPacket; spawnAt: number }[] = [];
+  private royaleLastStatusSent: { hp: number; coreHp: number; targetMode: RoyaleTargetMode; alive: boolean; kos: number } | null = null;
+  // How many alive players currently target me (gang-up compensation).
+  public royaleTargetedByCount: number = 0;
+
   private animationFrameId: number | null = null;
   private lastTime: number = 0;
   private onStateChangeCallback?: () => void;
@@ -198,7 +235,8 @@ export class GameEngine {
   // v2.2: reset both rear cores and the whole shrink-zone state. Called on
   // every battle start (and from the constructor for the title screen).
   private resetCores() {
-    const enemyCoreHp = this.mode === 'multi' ? 250 : STAGES[this.currentStage - 1].coreHp;
+    const enemyCoreHp =
+      this.mode === 'multi' || this.mode === 'royale' ? 250 : STAGES[this.currentStage - 1].coreHp;
     this.playerCore = { hp: 250, maxHp: 250, collapsed: false, crack: 0 };
     this.enemyCore = { hp: enemyCoreHp, maxHp: enemyCoreHp, collapsed: false, crack: 0 };
     this.shrinkPhase = 'idle';
@@ -217,7 +255,9 @@ export class GameEngine {
   // the 50% collapse (outer columns lock, characters pushed inward).
   private setCoreHp(side: 'player' | 'enemy', newHp: number) {
     const core = side === 'player' ? this.playerCore : this.enemyCore;
-    core.hp = Math.max(0, newHp);
+    // Clamped both ways: KO rewards must not push the core above its max
+    // (spec: +40, cap 250), and damage must not push it below 0.
+    core.hp = Math.max(0, Math.min(core.maxHp, newHp));
     core.crack = core.hp <= core.maxHp * 0.3 ? 2 : core.hp <= core.maxHp * 0.6 ? 1 : 0;
     if (!core.collapsed && core.hp <= core.maxHp * 0.5) {
       this.collapseSide(side);
@@ -314,12 +354,36 @@ export class GameEngine {
     return clampShrinkAnchor(x, y, originX, originY, this.renderer.cellW, this.renderer.cellH, this.renderer.gap);
   }
 
+  // GRID ROYALE (v2.4): clear all royale state so a duel / single battle
+  // never inherits a stale player list, KO buff or rank.
+  private resetRoyaleState() {
+    this.royalePlayers = [];
+    this.royaleMyId = null;
+    this.royaleTargetMode = 'random';
+    this.royaleTargetingIds = [];
+    this.royaleKos = 0;
+    this.royaleDamageBuff = 0;
+    this.royaleKillFeed = [];
+    this.royaleRank = null;
+    this.royaleAliveCount = 0;
+    this.royaleEliminated = false;
+    this.royaleWarnings = [];
+    this.lastHitBy = null;
+    this.royalePendingIncoming = [];
+    this.royaleLastStatusSent = null;
+    this.royaleTargetedByCount = 0;
+  }
+
   private startShrink() {
     this.shrinkPhase = 'shrinking';
     // Anchors are clamped into the inner safe area (cols 3-7, rows 2-4)
     // so the safe zone never sits on a collapsed outer column.
     this.shrinkAnchor = this.clampAnchor(this.player.x, this.player.y, this.renderer.playerOriginX, this.renderer.playerOriginY);
-    if (this.pendingRemoteAnchor) {
+    if (this.mode === 'royale') {
+      // Royale has no opponent board: only my own board shrinks.
+      this.shrinkAnchor2 = null;
+      this.shrinkRect2 = null;
+    } else if (this.pendingRemoteAnchor) {
       const mirrored = this.mirrorAnchor(this.pendingRemoteAnchor.normX, this.pendingRemoteAnchor.normY);
       this.shrinkAnchor2 = this.clampAnchor(mirrored.x, mirrored.y, this.renderer.enemyOriginX, this.renderer.enemyOriginY);
       this.pendingRemoteAnchor = null;
@@ -328,8 +392,8 @@ export class GameEngine {
       this.shrinkAnchor2 = this.clampAnchor(opp.x, opp.y, this.renderer.enemyOriginX, this.renderer.enemyOriginY);
     }
     this.shrinkRect = this.boardRect(this.renderer.playerOriginX, this.renderer.playerOriginY, this.playerBoard);
-    this.shrinkRect2 = this.boardRect(this.renderer.enemyOriginX, this.renderer.enemyOriginY, this.enemyBoard);
-    if (this.isOnline && !this.shrinkSent) {
+    this.shrinkRect2 = this.mode === 'royale' ? null : this.boardRect(this.renderer.enemyOriginX, this.renderer.enemyOriginY, this.enemyBoard);
+    if (this.isOnline && this.mode !== 'royale' && !this.shrinkSent) {
       this.shrinkSent = true;
       const totalW = GRID_COLS * this.renderer.cellW + (GRID_COLS - 1) * this.renderer.gap;
       const totalH = GRID_ROWS * this.renderer.cellH + (GRID_ROWS - 1) * this.renderer.gap;
@@ -369,13 +433,19 @@ export class GameEngine {
   private updateShrinkRects() {
     const t = this.gameTime - 90;
     const fullP = this.boardRect(this.renderer.playerOriginX, this.renderer.playerOriginY, this.playerBoard);
-    const fullE = this.boardRect(this.renderer.enemyOriginX, this.renderer.enemyOriginY, this.enemyBoard);
     this.shrinkRect = this.shrinkRectFor(this.shrinkAnchor, fullP, t);
-    this.shrinkRect2 = this.shrinkRectFor(this.shrinkAnchor2, fullE, t);
+    if (this.mode === 'royale') {
+      this.shrinkRect2 = null;
+    } else {
+      const fullE = this.boardRect(this.renderer.enemyOriginX, this.renderer.enemyOriginY, this.enemyBoard);
+      this.shrinkRect2 = this.shrinkRectFor(this.shrinkAnchor2, fullE, t);
+    }
     if (t >= 45) this.shrinkPhase = 'closed';
     // Lock every tile whose center lies outside its side's safe rect.
     this.applyShrinkLocks(this.playerBoard, this.shrinkRect, this.renderer.playerOriginX, this.renderer.playerOriginY);
-    this.applyShrinkLocks(this.enemyBoard, this.shrinkRect2, this.renderer.enemyOriginX, this.renderer.enemyOriginY);
+    if (this.mode !== 'royale') {
+      this.applyShrinkLocks(this.enemyBoard, this.shrinkRect2, this.renderer.enemyOriginX, this.renderer.enemyOriginY);
+    }
   }
 
   private applyShrinkLocks(board: GridBoard, rect: ShrinkRect | null, originX: number, originY: number) {
@@ -409,6 +479,12 @@ export class GameEngine {
       }
     } else {
       this.player.externalSpeedMult = 1.0;
+    }
+    if (this.mode === 'royale') {
+      // Royale has no opponent character on my screen; only my own board
+      // shrinks (every survivor shrinks on their own board at the same 90s
+      // mark — the zones are per-client, not synced).
+      return;
     }
     if (this.shrinkRect2) {
       if (this.player2) {
@@ -467,8 +543,9 @@ export class GameEngine {
   private handleKeyDown = (e: KeyboardEvent) => {
     this.keys[e.code] = true;
 
-    // Number keys 1~7 to instant switch archetype (P1 in single/boss mode)
-    if (this.mode !== 'multi' && ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7'].includes(e.code)) {
+    // Number keys 1~7 to instant switch archetype (P1 in single/boss mode).
+    // In royale, 1~4 are the targeting modes instead (see below).
+    if ((this.mode === 'single' || this.mode === 'boss') && ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7'].includes(e.code)) {
       const idx = parseInt(e.code.replace('Digit', ''), 10) - 1;
       const archetypeKeys: ArchetypeId[] = [
         'lancer',
@@ -489,6 +566,17 @@ export class GameEngine {
           17
         );
         this.triggerStateUpdate();
+      }
+    }
+
+    // GRID ROYALE (v2.4): 1~4 switch the targeting mode live. The server
+    // resolves the actual target per fire; this only changes the mode.
+    if (this.mode === 'royale' && this.status === 'playing') {
+      const targetModes: RoyaleTargetMode[] = ['random', 'ko', 'counter', 'leader'];
+      const idx = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(e.code);
+      if (idx >= 0) {
+        e.preventDefault();
+        this.setRoyaleTargetMode(targetModes[idx]);
       }
     }
 
@@ -577,6 +665,7 @@ export class GameEngine {
     this.boardHashStreak = 0;
     this.boardSyncPending = false;
     this.peerDisconnectHandled = false;
+    this.resetRoyaleState();
     this.mode = mode;
     this.status = 'playing';
     this.gameTime = 0;
@@ -673,6 +762,7 @@ export class GameEngine {
     this.boardHashStreak = 0;
     this.boardSyncPending = false;
     this.peerDisconnectHandled = false;
+    this.resetRoyaleState();
     this.comboCount = 0;
     this.comboTimer = 0;
     this.comboMax = 0;
@@ -744,6 +834,240 @@ export class GameEngine {
 
     soundManager.playSwitch();
     this.triggerStateUpdate();
+  }
+
+  // --- GRID ROYALE (v2.4) -----------------------------------------------
+  // Up to 8 players, warp-portal combat. No board tiles or 20 Hz movement
+  // are synced — only the 4 lightweight packets. My board is mine alone
+  // (seeded from the server seed); the top board is replaced by the portal.
+  public startRoyaleGame(players: RoyalePlayerInfo[], myId: string, seed: number = 7777777) {
+    this.isOnline = true;
+    this.onlineRole = 'p1';
+    this.onlineRoomCode = networkManager.royaleRoomCode;
+    this.mode = 'royale';
+    this.status = 'playing';
+    this.gameTime = 0;
+    this.networkSyncTimer = 0;
+    this.boardSyncTimer = 0;
+    this.boardHashStreak = 0;
+    this.boardSyncPending = false;
+    this.peerDisconnectHandled = false;
+    this.resetRoyaleState();
+    this.royalePlayers = players.map((p) => ({ ...p, targetingIds: [...p.targetingIds] }));
+    this.royaleMyId = myId;
+    this.royaleAliveCount = this.royalePlayers.filter((p) => p.alive).length;
+    this.comboCount = 0;
+    this.comboTimer = 0;
+    this.comboMax = 0;
+    this.combo2Count = 0;
+    this.combo2Timer = 0;
+    this.combo2Max = 0;
+    this.resetCores();
+
+    this.stats = {
+      damageDealt: 0,
+      damageTaken: 0,
+      shapesLaunched: 0,
+      tilesDiscarded: 0,
+      clashesWon: 0,
+      maxClusterSize: 0,
+      maxCombo: 0,
+      gameDuration: 0,
+      currentStage: 1,
+    };
+
+    // My own board only; the seed needs no cross-client agreement.
+    this.playerBoard.reset(Math.abs(seed) || 7777777);
+    this.enemyBoard.reset();
+    this.projectileMgr.clear();
+    this.particleSystem.clear();
+
+    const me = this.royalePlayers.find((p) => p.id === myId);
+    const pStartX = this.renderer.playerOriginX + (GRID_COLS * (this.renderer.cellW + this.renderer.gap)) / 2;
+    const pStartY = this.renderer.playerOriginY + (GRID_ROWS * (this.renderer.cellH + this.renderer.gap)) / 2;
+    this.player.reset(pStartX, pStartY);
+    this.player.setArchetype(me?.archetype ?? 'lancer');
+    this.player2 = null;
+
+    networkManager.onRoyaleIncoming = (packet) => this.handleRoyaleIncoming(packet);
+    networkManager.onRoyaleStatus = (packet) => this.handleRoyaleStatus(packet);
+    networkManager.onRoyaleKo = (packet) => this.handleRoyaleKo(packet);
+
+    this.sendRoyaleStatusIfChanged(true);
+    soundManager.playSwitch();
+    this.triggerStateUpdate();
+  }
+
+  public setRoyaleTargetMode(mode: RoyaleTargetMode) {
+    if (this.mode !== 'royale' || this.status !== 'playing') return;
+    if (this.royaleTargetMode === mode) return;
+    this.royaleTargetMode = mode;
+    this.sendRoyaleStatusIfChanged(true);
+    const label = mode === 'random' ? '무작위' : mode === 'ko' ? '마무리' : mode === 'counter' ? '카운터' : '선두';
+    this.particleSystem.addFloatingText(this.player.x, this.player.y - 40, `타겟: ${label}`, '#FFD166', 16);
+    this.triggerStateUpdate();
+  }
+
+  private royaleMyInfo(): RoyalePlayerInfo | undefined {
+    return this.royalePlayers.find((p) => p.id === this.royaleMyId);
+  }
+
+  private royaleName(id: string): string {
+    return this.royalePlayers.find((p) => p.id === id)?.name ?? '플레이어';
+  }
+
+  // Send my status when anything the room needs changed (HP/core, target
+  // mode, elimination, KO count). Never per-frame.
+  private sendRoyaleStatusIfChanged(force: boolean = false) {
+    if (this.mode !== 'royale' || !this.royaleMyId) return;
+    const snap = {
+      hp: Math.round(this.player.hp),
+      coreHp: Math.round(this.playerCore.hp),
+      targetMode: this.royaleTargetMode,
+      alive: !this.royaleEliminated,
+      kos: this.royaleKos,
+    };
+    const last = this.royaleLastStatusSent;
+    if (
+      !force &&
+      last &&
+      last.hp === snap.hp &&
+      last.coreHp === snap.coreHp &&
+      last.targetMode === snap.targetMode &&
+      last.alive === snap.alive &&
+      last.kos === snap.kos
+    ) {
+      return;
+    }
+    this.royaleLastStatusSent = snap;
+    networkManager.sendRoyaleStatus({
+      playerId: this.royaleMyId,
+      hp: snap.hp,
+      coreHp: snap.coreHp,
+      targetMode: snap.targetMode,
+      targetingIds: this.royaleTargetingIds,
+      alive: snap.alive,
+      kos: snap.kos,
+      killerId: snap.alive ? null : this.lastHitBy,
+    });
+  }
+
+  private handleRoyaleIncoming(packet: RoyaleIncomingPacket) {
+    if (this.mode !== 'royale' || this.status !== 'playing') return;
+    const cols = packet.cells.map((c) => c.col);
+    const warnCol = cols.length > 0 ? Math.min(...cols) : 4;
+    // 0.4s warning line at the portal, then the projectile spawns.
+    this.royaleWarnings.push({ col: warnCol, until: this.gameTime + ROYALE_INCOMING_WARNING_SEC });
+    this.royalePendingIncoming.push({
+      packet,
+      spawnAt: this.gameTime + ROYALE_INCOMING_WARNING_SEC,
+    });
+    this.lastHitBy = packet.fromPlayerId;
+  }
+
+  private spawnRoyaleIncoming(packet: RoyaleIncomingPacket) {
+    // Rebuild the sender's projectile verbatim: the packet carries the
+    // final per-cell damage / HP / speed, so nothing is recomputed here.
+    const cluster: Cluster = {
+      id: `royale_in_${Date.now()}_${Math.random()}`,
+      color: packet.color,
+      shapeType: packet.shape,
+      shapeTitle: '',
+      isActivePad: true,
+      tiles: packet.cells.map((c) => ({ col: c.col, row: 0 })),
+    };
+    const proj = this.projectileMgr.createProjectile(
+      'enemy',
+      cluster,
+      this.renderer.playerOriginX,
+      this.renderer.enemyOriginY,
+      this.renderer.cellW,
+      this.renderer.cellH,
+      this.renderer.gap,
+      'standard'
+    );
+    packet.cells.forEach((c, i) => {
+      const cell = proj.cells[i];
+      if (cell) {
+        cell.hp = c.hp;
+        cell.maxHp = Math.max(c.hp, cell.maxHp);
+      }
+    });
+    proj.damagePerCell = packet.cells[0]?.damage ?? proj.damagePerCell;
+    proj.vy = Math.abs(packet.speed);
+    proj.speedMultiplier = Math.abs(packet.speed) / 560;
+    proj.fromPlayerId = packet.fromPlayerId;
+    soundManager.playLaunch(packet.color, packet.cells.length, packet.shape);
+  }
+
+  private handleRoyaleStatus(packet: RoyaleStatusPacket) {
+    if (this.mode !== 'royale') return;
+    const p = this.royalePlayers.find((x) => x.id === packet.playerId);
+    if (p) {
+      p.hp = packet.hp;
+      p.coreHp = packet.coreHp;
+      p.targetMode = packet.targetMode;
+      p.targetingIds = [...packet.targetingIds];
+      p.alive = packet.alive;
+      p.kos = packet.kos;
+    }
+    this.royaleAliveCount = this.royalePlayers.filter((x) => x.alive).length;
+    if (packet.playerId === this.royaleMyId) {
+      this.royaleTargetingIds = [...packet.targetingIds];
+    }
+    // Gang-up compensation: 3+ players targeting me speeds my refill.
+    this.royaleTargetedByCount = this.royalePlayers.filter(
+      (x) => x.alive && x.id !== this.royaleMyId && x.targetingIds.includes(this.royaleMyId ?? '')
+    ).length;
+    this.triggerStateUpdate();
+  }
+
+  private handleRoyaleKo(packet: RoyaleKoPacket) {
+    if (this.mode !== 'royale') return;
+    const victim = this.royalePlayers.find((x) => x.id === packet.victimId);
+    const killer = packet.killerId ? this.royalePlayers.find((x) => x.id === packet.killerId) : undefined;
+    if (victim) {
+      victim.alive = false;
+      victim.rank = packet.rank;
+    }
+    if (killer) killer.kos++;
+    this.royaleAliveCount = packet.aliveCount;
+    const feedText = killer
+      ? `${killer.name} → ${victim?.name ?? '플레이어'} 처치 (#${packet.rank}위 탈락)`
+      : `${victim?.name ?? '플레이어'} 탈락 (#${packet.rank}위)`;
+    this.royaleKillFeed.unshift({ text: feedText, color: killer ? '#FF6B6B' : '#94A3B8' });
+    this.royaleKillFeed = this.royaleKillFeed.slice(0, 2);
+
+    if (packet.victimId === this.royaleMyId) {
+      // My own elimination (the server already ranked me; my defeat
+      // screen was shown when my HP hit 0 — this fills in the rank).
+      this.royaleRank = packet.rank;
+      this.royaleEliminated = true;
+      this.status = 'defeat';
+      soundManager.playDefeat();
+      this.triggerStateUpdate();
+      return;
+    }
+
+    if (packet.killerId === this.royaleMyId) {
+      // KO rewards: HP +20 (cap 100), core +40 (cap 250), +10% damage
+      // (max 5 stacks, +50%).
+      this.royaleKos++;
+      this.royaleDamageBuff = Math.min(ROYALE_KO_DMG_BUFF_MAX, this.royaleDamageBuff + 1);
+      this.player.hp = Math.min(100, this.player.hp + ROYALE_KO_HP_REWARD);
+      this.setCoreHp('player', this.playerCore.hp + ROYALE_KO_CORE_REWARD);
+      this.particleSystem.addFloatingText(this.player.x, this.player.y - 50, 'KO! +20 HP · +40 코어 · +10% 데미지', '#FFD166', 18);
+      this.particleSystem.addShockwave(this.player.x, this.player.y, 120, '#FFD166');
+      this.sendRoyaleStatusIfChanged(true);
+    }
+
+    // Last one standing wins.
+    if (packet.aliveCount <= 1 && !this.royaleEliminated && this.status === 'playing') {
+      this.royaleRank = 1;
+      this.status = 'victory';
+      soundManager.playVictory();
+      this.triggerStateUpdate();
+    }
   }
 
   private handleRemoteAction(action: NetworkAction) {
@@ -1141,6 +1465,14 @@ export class GameEngine {
       frontline
     );
 
+    // GRID ROYALE: KO damage buff (+10% per KO, max +50%) applies to my
+    // launches; the buffed damage is what the portal packet carries.
+    if (this.mode === 'royale' && playerNum === 1 && this.royaleDamageBuff > 0) {
+      proj.damagePerCell = Math.round(
+        proj.damagePerCell * (1 + ROYALE_KO_DMG_BUFF_STEP * this.royaleDamageBuff)
+      );
+    }
+
     board.launchCluster(cluster);
 
     // A launched tile can no longer be a held Transporter grab.
@@ -1205,7 +1537,7 @@ export class GameEngine {
       this.renderer.gap,
       () => {
         // Sniper beam
-        this.projectileMgr.createSniperBeam(
+        const beam = this.projectileMgr.createSniperBeam(
           ownerStr,
           actor.currentCol,
           originX,
@@ -1214,6 +1546,11 @@ export class GameEngine {
           this.renderer.cellH,
           this.renderer.gap
         );
+        if (this.mode === 'royale' && this.royaleDamageBuff > 0) {
+          beam.damagePerCell = Math.round(
+            beam.damagePerCell * (1 + ROYALE_KO_DMG_BUFF_STEP * this.royaleDamageBuff)
+          );
+        }
         soundManager.playLaunch('yellow', 1, 'spear');
       }
     );
@@ -1379,7 +1716,8 @@ export class GameEngine {
     // (it re-registers its handlers on every render), the notification
     // would only update hidden lobby state. Polling the connection flags
     // here guarantees the battle ends with a result either way.
-    if (this.isOnline && this.status === 'playing' && !this.peerDisconnectHandled) {
+    // (Royale has no single opponent to poll: only my own socket matters.)
+    if (this.isOnline && this.mode !== 'royale' && this.status === 'playing' && !this.peerDisconnectHandled) {
       if (!networkManager.isConnected) {
         this.peerDisconnectHandled = true;
         this.status = 'defeat';
@@ -1393,6 +1731,16 @@ export class GameEngine {
         this.status = 'victory';
         this.particleSystem.addFloatingText(960, 540, 'OPPONENT DISCONNECTED!', '#FF3366', 22);
         soundManager.playVictory();
+        this.triggerStateUpdate();
+        return;
+      }
+    }
+    if (this.isOnline && this.mode === 'royale' && this.status === 'playing' && !this.peerDisconnectHandled) {
+      if (!networkManager.isConnected) {
+        this.peerDisconnectHandled = true;
+        this.status = 'defeat';
+        this.particleSystem.addFloatingText(960, 540, 'CONNECTION LOST', '#FF3366', 22);
+        soundManager.playDefeat();
         this.triggerStateUpdate();
         return;
       }
@@ -1456,8 +1804,14 @@ export class GameEngine {
     // Grid cooldown recovery. Collapsed boards refill 1.3x faster
     // (1.3s -> 1.0s). The return value tells whether any tile refilled
     // this frame, which is when the refill sound plays (throttled).
+    // Royale gang-up compensation: 3+ players targeting me speeds my
+    // refill by 15%.
+    const gangupMult =
+      this.mode === 'royale' && this.royaleTargetedByCount >= ROYALE_GANGUP_THRESHOLD
+        ? ROYALE_GANGUP_REFILL_MULT
+        : 1.0;
     const playerCDMult =
-      (this.player.archetypeId === 'speedster' ? 1.5 : 1.0) * (this.playerCore.collapsed ? 1.3 : 1.0);
+      (this.player.archetypeId === 'speedster' ? 1.5 : 1.0) * (this.playerCore.collapsed ? 1.3 : 1.0) * gangupMult;
     const isSniper = this.player.archetypeId === 'sniper';
     const playerRefilled = this.playerBoard.update(dt, playerCDMult, isSniper);
 
@@ -1468,11 +1822,12 @@ export class GameEngine {
         : 1.0) * (this.enemyCore.collapsed ? 1.3 : 1.0);
     // v2.3: offline, the enemy board uses the AI's archetypes (sniper
     // 1-2 cell launches, speedster refill); online/local 2P it uses P2's.
+    // Royale has no opponent board on my screen: skip its update.
     const isEnemySniper =
       this.mode === 'multi'
         ? this.player2?.archetypeId === 'sniper'
         : this.enemy.archetypes.includes('sniper');
-    const enemyRefilled = this.enemyBoard.update(dt, enemyCDMult, isEnemySniper);
+    const enemyRefilled = this.mode === 'royale' ? false : this.enemyBoard.update(dt, enemyCDMult, isEnemySniper);
 
     this.refillSoundTimer -= dt;
     if ((playerRefilled || enemyRefilled) && this.refillSoundTimer <= 0) {
@@ -1481,7 +1836,21 @@ export class GameEngine {
     }
 
     // Player Movement & Online Position Sync
-    if (this.isOnline) {
+    if (this.isOnline && this.mode === 'royale') {
+      // Royale: local movement only. No 20 Hz move sync, no board hash —
+      // the 4 lightweight packets carry everything.
+      this.player.analogMove = this.joystickVector;
+      this.player.update(
+        dt,
+        this.keys,
+        this.renderer.playerOriginX,
+        this.renderer.playerOriginY,
+        this.renderer.cellW,
+        this.renderer.cellH,
+        this.renderer.gap,
+        this.playerBoard
+      );
+    } else if (this.isOnline) {
       this.player.analogMove = this.joystickVector;
       this.player.update(
         dt,
@@ -1610,6 +1979,11 @@ export class GameEngine {
     this.projectileMgr.update(dt, this.particleSystem, this.player.x, target2X);
     this.particleSystem.update(dt);
 
+    // GRID ROYALE: portal warps, pending incoming spawns, warning lines.
+    if (this.mode === 'royale') {
+      this.updateRoyalePortal();
+    }
+
     // Combo streak decay timer (4.0s timeout, v2.2)
     if (this.comboTimer > 0) {
       this.comboTimer -= dt;
@@ -1639,7 +2013,19 @@ export class GameEngine {
 
     // Check Win / Loss condition (v2.2: a destroyed rear core also ends
     // the battle immediately).
-    if (this.mode === 'multi' && this.player2) {
+    // GRID ROYALE: my own elimination is detected locally (HP/core 0) and
+    // reported via royale_status; the server answers with royale_ko, which
+    // fills in the rank. Victory is decided by the ko broadcast
+    // (aliveCount 1), not here.
+    if (this.mode === 'royale') {
+      if (!this.royaleEliminated && (this.player.hp <= 0 || this.playerCore.hp <= 0) && this.status === 'playing') {
+        this.royaleEliminated = true;
+        this.status = 'defeat';
+        soundManager.playDefeat();
+        this.sendRoyaleStatusIfChanged(true);
+        this.triggerStateUpdate();
+      }
+    } else if (this.mode === 'multi' && this.player2) {
       if ((this.player2.hp <= 0 || this.enemyCore.hp <= 0) && this.status === 'playing') {
         this.status = 'victory'; // I Won!
         soundManager.playVictory();
@@ -1673,6 +2059,50 @@ export class GameEngine {
         this.triggerStateUpdate();
       }
     }
+
+    // Royale: report HP/core/target changes (never per-frame).
+    if (this.mode === 'royale') {
+      this.sendRoyaleStatusIfChanged();
+    }
+  }
+
+  // GRID ROYALE (v2.4): portal crossing, incoming spawns, warning expiry.
+  private updateRoyalePortal() {
+    const now = this.gameTime;
+    this.royaleWarnings = this.royaleWarnings.filter((w) => w.until > now);
+    const due = this.royalePendingIncoming.filter((p) => p.spawnAt <= now);
+    if (due.length > 0) {
+      this.royalePendingIncoming = this.royalePendingIncoming.filter((p) => p.spawnAt > now);
+      for (const { packet } of due) this.spawnRoyaleIncoming(packet);
+    }
+    // My projectiles crossing the portal warp to the resolved target.
+    const cellW = this.renderer.cellW;
+    const gap = this.renderer.gap;
+    for (let i = this.projectileMgr.projectiles.length - 1; i >= 0; i--) {
+      const p = this.projectileMgr.projectiles[i];
+      if (p.owner !== 'player') continue;
+      if (p.y > ROYALE_PORTAL_Y) continue;
+      this.projectileMgr.projectiles.splice(i, 1);
+      const liveCells = p.cells.filter((c) => !c.destroyed);
+      if (liveCells.length === 0) continue;
+      const cells = liveCells.map((c) => {
+        const cx = p.x + c.relCol * (cellW + gap) + cellW / 2;
+        const col = Math.max(
+          0,
+          Math.min(GRID_COLS - 1, Math.floor((cx - this.renderer.playerOriginX) / (cellW + gap)))
+        );
+        return { col, hp: c.hp, damage: p.damagePerCell };
+      });
+      networkManager.sendRoyaleFire({
+        targetMode: this.royaleTargetMode,
+        color: p.color,
+        shape: p.shapeType,
+        cells,
+        speed: Math.abs(p.vy),
+        isFrontline: p.frontline ?? false,
+        ignoreCounter: !!p.isBeam,
+      });
+    }
   }
 
   // Pure physical collision damage: ONLY direct character hits take damage (Back wall damage DELETED)
@@ -1685,8 +2115,10 @@ export class GameEngine {
     for (let i = this.projectileMgr.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectileMgr.projectiles[i];
 
-      // 1. My projectile flying towards opponent
-      if (p.owner === 'player') {
+      // 1. My projectile flying towards opponent. (Royale: my projectiles
+      // never hit a character/core locally — they warp through the portal,
+      // handled in updateRoyalePortal before this runs.)
+      if (p.owner === 'player' && this.mode !== 'royale') {
         for (const cell of p.cells) {
           if (cell.destroyed) continue;
           const cellLeft = p.x + cell.relCol * (cellW + gap);
@@ -1841,12 +2273,14 @@ export class GameEngine {
             // 0.3s collapse-push protection) is up, the cell passes through
             // with no hit resolution at all.
             if (this.player.invincibleTimer > 0) continue;
-            // Second-side combo (local/online 2P only). In local 2P the
-            // damage scales with it; online, the attacker's own client is
-            // the damage authority for its combo, so this side keeps the
-            // unscaled value and the 'hit' packet syncs HP.
+            // Second-side combo (local/online 2P and royale incoming
+            // only). In local 2P the damage scales with it; online, the
+            // attacker's own client is the damage authority for its combo,
+            // so this side keeps the unscaled value and the 'hit' packet
+            // syncs HP. In royale the damage is already final in the
+            // packet, and my HP is reported via royale_status.
             let dmg = p.damagePerCell;
-            if (this.mode === 'multi') {
+            if (this.mode === 'multi' || this.mode === 'royale') {
               this.combo2Count++;
               this.combo2Timer = 4.0;
               this.combo2Max = Math.max(this.combo2Max, this.combo2Count);
@@ -1856,6 +2290,7 @@ export class GameEngine {
             }
             // v2.2 anti-instant-kill: one direct hit deals at most 35.
             dmg = Math.min(MAX_SINGLE_HIT_DMG, dmg);
+            if (p.fromPlayerId) this.lastHitBy = p.fromPlayerId;
             this.player.takeDamage(dmg, true);
             this.stats.damageTaken += dmg;
             this.player.knockbackY = 180;
@@ -1866,7 +2301,7 @@ export class GameEngine {
             this.particleSystem.emitBlockDestruction(cellCenterX, cellCenterY, p.glowColor, 20);
             this.particleSystem.addFloatingText(this.player.x, this.player.y - 20, `-${dmg} HIT!`, '#FF3366', 18);
 
-            if (this.isOnline) {
+            if (this.isOnline && this.mode !== 'royale') {
               networkManager.sendAction('hit', { newHp: this.player.hp, dmg });
             }
 
@@ -1898,7 +2333,7 @@ export class GameEngine {
           const boardBottom = this.renderer.playerOriginY + GRID_ROWS * (cellH + gap) - gap;
           if (cellCenterY > boardBottom && col >= 3 && col <= 5) {
             let dmg = p.damagePerCell;
-            if (this.mode === 'multi') {
+            if (this.mode === 'multi' || this.mode === 'royale') {
               this.combo2Count++;
               this.combo2Timer = 4.0;
               this.combo2Max = Math.max(this.combo2Max, this.combo2Count);
@@ -1909,6 +2344,7 @@ export class GameEngine {
             const coreMult = this.gameTime >= 90 ? 2 : 1;
             // v2.2: sniper 1-2 cell projectiles deal 50% to the core.
             const finalDmg = Math.round(dmg * coreMult * sniperCoreDamageMult(p.archetypeId, p.cells.length));
+            if (p.fromPlayerId) this.lastHitBy = p.fromPlayerId;
             const newHp = this.damageCore('player', finalDmg);
             this.stats.damageTaken += finalDmg;
             cell.destroyed = true;
@@ -1925,7 +2361,8 @@ export class GameEngine {
             );
             // Online: the defender is the damage authority; send the
             // authoritative HP so the attacker's copy of my core syncs.
-            if (this.isOnline) {
+            // (Royale reports HP via royale_status instead.)
+            if (this.isOnline && this.mode !== 'royale') {
               networkManager.sendAction('core_hit', { newHp, dmg: finalDmg });
             }
             this.triggerStateUpdate();
@@ -1945,6 +2382,7 @@ export class GameEngine {
     this.status = 'title';
     this.isOnline = false;
     this.campaignRun = null;
+    this.resetRoyaleState();
     this.playerBoard.reset();
     this.enemyBoard.reset();
     this.projectileMgr.clear();
@@ -1965,6 +2403,12 @@ export class GameEngine {
   }
 
   public restartCurrentBattle(broadcastRematch: boolean = true) {
+    if (this.mode === 'royale') {
+      // No rematch in royale: back to the title (a new room starts a new
+      // game). The GameOverModal's restart button lands here.
+      this.returnToTitle();
+      return;
+    }
     if (this.isOnline) {
       // Server-coordinated rematch: the battle restarts only when BOTH
       // players ask, with one shared seed from the server. Restarting
@@ -2003,7 +2447,9 @@ export class GameEngine {
       this.enemyCore,
       this.shrinkRect,
       this.shrinkRect2,
-      this.shrinkPhase
+      this.shrinkPhase,
+      this.mode === 'royale',
+      this.royaleWarnings
     );
   }
 

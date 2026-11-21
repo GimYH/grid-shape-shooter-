@@ -6,11 +6,14 @@ import { RotateCcw, Trophy, Skull, Zap, Swords } from 'lucide-react';
 interface GameOverModalProps {
   status: 'victory' | 'defeat';
   stats: GameStats;
+  // GRID ROYALE (v2.4): final rank (1 = winner). When set, the restart
+  // button is hidden — a royale game has no rematch, only a new room.
+  rank?: number | null;
   onRestart: () => void;
   onReturnToTitle: () => void;
 }
 
-export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, onRestart, onReturnToTitle }) => {
+export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, rank, onRestart, onReturnToTitle }) => {
   const isVictory = status === 'victory';
   // v2.3: a career no-continue badge, if one was ever earned.
   const noContinue = useMemo(
@@ -41,6 +44,11 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, onR
         <h2 className="text-2xl sm:text-3xl font-black tracking-wider uppercase mb-1">
           {isVictory ? 'VICTORY ACHIEVED' : 'OPERATOR DEFEATED'}
         </h2>
+        {rank != null && (
+          <div className="px-4 py-1.5 rounded-full bg-fuchsia-500/20 border border-fuchsia-400/60 text-fuchsia-300 text-lg font-black tabular-nums mb-2">
+            #{rank}위
+          </div>
+        )}
         <p className="text-xs text-slate-400 mb-6">
           {isVictory
             ? '상대 진영을 격파하고 그리드 지배권을 확보했습니다.'
@@ -112,17 +120,19 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, onR
 
         {/* Buttons */}
         <div className="flex flex-col gap-2.5 w-full">
-          <button
-            onClick={onRestart}
-            className={`w-full py-3.5 rounded-full crack-overlay font-bold text-sm tracking-wider uppercase flex items-center justify-center gap-2 transition-all hover:scale-102 active:scale-98 shadow-lg cursor-pointer ${
-              isVictory
-                ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/30'
-                : 'bg-rose-500 hover:bg-rose-400 text-white shadow-rose-500/30'
-            }`}
-          >
-            <RotateCcw className="w-4 h-4" />
-            <span>다시 대전하기 / 재도전</span>
-          </button>
+          {rank == null && (
+            <button
+              onClick={onRestart}
+              className={`w-full py-3.5 rounded-full crack-overlay font-bold text-sm tracking-wider uppercase flex items-center justify-center gap-2 transition-all hover:scale-102 active:scale-98 shadow-lg cursor-pointer ${
+                isVictory
+                  ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/30'
+                  : 'bg-rose-500 hover:bg-rose-400 text-white shadow-rose-500/30'
+              }`}
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>다시 대전하기 / 재도전</span>
+            </button>
+          )}
 
           <button
             onClick={onReturnToTitle}

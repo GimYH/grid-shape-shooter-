@@ -56,7 +56,9 @@ export class CanvasRenderer {
     enemyCore?: CoreState,
     shrinkRect?: ShrinkRect | null,
     shrinkRect2?: ShrinkRect | null,
-    shrinkPhase?: ShrinkPhase
+    shrinkPhase?: ShrinkPhase,
+    isRoyale?: boolean,
+    portalWarnings?: { col: number; until: number }[]
   ) {
     ctx.save();
 
@@ -73,16 +75,20 @@ export class CanvasRenderer {
     // 2. Neutral Clash Zone
     this.renderNeutralZone(ctx, gameTime);
 
-    // 3. Enemy Grid
-    const opponentCol = player2 ? player2.currentCol : enemy.currentCol;
-    const opponentRow = player2 ? player2.currentRow : enemy.currentRow;
-    this.renderGrid(ctx, enemyBoard, this.enemyOriginX, this.enemyOriginY, 'enemy', opponentCol, opponentRow);
+    // 3. Enemy Grid — in royale the top board is a warp portal instead.
+    if (isRoyale) {
+      this.renderPortal(ctx, gameTime);
+    } else {
+      const opponentCol = player2 ? player2.currentCol : enemy.currentCol;
+      const opponentRow = player2 ? player2.currentRow : enemy.currentRow;
+      this.renderGrid(ctx, enemyBoard, this.enemyOriginX, this.enemyOriginY, 'enemy', opponentCol, opponentRow);
+    }
 
     // 4. Player Grid
     this.renderGrid(ctx, playerBoard, this.playerOriginX, this.playerOriginY, 'player', player.currentCol, player.currentRow);
 
     // 4b. Rear cores (behind each board, central 3 columns)
-    if (enemyCore) this.renderCore(ctx, enemyCore, this.enemyOriginX, this.enemyOriginY - 22, false);
+    if (!isRoyale && enemyCore) this.renderCore(ctx, enemyCore, this.enemyOriginX, this.enemyOriginY - 22, false);
     if (playerCore) this.renderCore(ctx, playerCore, this.playerOriginX, this.playerOriginY + GRID_ROWS * (this.cellH + this.gap) - this.gap, true);
 
     // 5. Lasers
@@ -91,16 +97,21 @@ export class CanvasRenderer {
     // 6. Projectiles
     this.renderProjectiles(ctx, projectileMgr, gameTime);
 
+    // 6a. Royale incoming warning lines (0.4s before the projectile drops).
+    if (isRoyale && portalWarnings && portalWarnings.length > 0) {
+      this.renderPortalWarnings(ctx, portalWarnings, gameTime);
+    }
+
     // 6b. Shrink walls (over the boards, under the characters)
     if (shrinkPhase === 'shrinking' || shrinkPhase === 'closed') {
-      this.renderShrinkWall(ctx, shrinkRect2 ?? null, this.enemyOriginX, this.enemyOriginY, gameTime);
+      if (!isRoyale) this.renderShrinkWall(ctx, shrinkRect2 ?? null, this.enemyOriginX, this.enemyOriginY, gameTime);
       this.renderShrinkWall(ctx, shrinkRect ?? null, this.playerOriginX, this.playerOriginY, gameTime);
     }
 
     // 7. Characters
     if (player2) {
       this.renderPlayer(ctx, player2, gameTime, enemyBoard, shrinkRect2 ?? null);
-    } else {
+    } else if (!isRoyale) {
       this.renderEnemy(ctx, enemy, gameTime, shrinkRect2 ?? null);
     }
     this.renderPlayer(ctx, player, gameTime, playerBoard, shrinkRect ?? null);
@@ -231,6 +242,85 @@ export class CanvasRenderer {
     ctx.strokeText(text, tx, ty);
     ctx.fillStyle = 'rgba(200, 225, 255, 0.55)';
     ctx.fillText(text, tx, ty);
+    ctx.restore();
+  }
+
+  // GRID ROYALE (v2.4): the warp portal replaces the top board. It sits in
+  // the Y <= 80 strip; my projectiles vanish into it and enemy projectiles
+  // drop out of it. The 80..404 area below stays open flight space.
+  private renderPortal(ctx: CanvasRenderingContext2D, time: number) {
+    const cx = this.canvasWidth / 2;
+    const cy = 40;
+    const rx = 430;
+    const ry = 30;
+    ctx.save();
+
+    // Outer glow ring (rotating dashes for a swirling gate feel).
+    ctx.translate(cx, cy);
+    ctx.rotate(0);
+    const grad = ctx.createLinearGradient(-rx, 0, rx, 0);
+    grad.addColorStop(0, '#33CCFF');
+    grad.addColorStop(0.5, '#B57EDC');
+    grad.addColorStop(1, '#FF3366');
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 4;
+    ctx.setLineDash([26, 14]);
+    ctx.lineDashOffset = -time * 60;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Inner glow fill.
+    const fill = ctx.createRadialGradient(0, 0, 4, 0, 0, rx);
+    fill.addColorStop(0, 'rgba(181, 126, 220, 0.35)');
+    fill.addColorStop(1, 'rgba(51, 204, 255, 0.05)');
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Label.
+    ctx.save();
+    ctx.font = '700 15px "Chakra Petch", monospace';
+    ctx.textAlign = 'center';
+    ctx.strokeStyle = 'rgba(3, 6, 12, 0.9)';
+    ctx.lineWidth = 4;
+    ctx.strokeText('WARP PORTAL · 전송 포탈', cx, cy + 5);
+    ctx.fillStyle = 'rgba(220, 235, 255, 0.9)';
+    ctx.fillText('WARP PORTAL · 전송 포탈', cx, cy + 5);
+    ctx.restore();
+  }
+
+  // GRID ROYALE (v2.4): 0.4s warning line at the top of the column an
+  // incoming projectile is about to drop from.
+  private renderPortalWarnings(
+    ctx: CanvasRenderingContext2D,
+    warnings: { col: number; until: number }[],
+    time: number
+  ) {
+    const pulse = 0.45 + 0.35 * Math.sin(time * 14);
+    ctx.save();
+    for (const w of warnings) {
+      const x = this.enemyOriginX + w.col * (this.cellW + this.gap) + this.cellW / 2;
+      ctx.strokeStyle = `rgba(255, 68, 68, ${pulse})`;
+      ctx.lineWidth = 3;
+      ctx.setLineDash([10, 8]);
+      ctx.beginPath();
+      ctx.moveTo(x, this.enemyOriginY);
+      ctx.lineTo(x, this.neutralZoneY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Warning chevron at the portal edge.
+      ctx.fillStyle = `rgba(255, 68, 68, ${Math.min(1, pulse + 0.3)})`;
+      ctx.beginPath();
+      ctx.moveTo(x - 12, this.enemyOriginY + 2);
+      ctx.lineTo(x + 12, this.enemyOriginY + 2);
+      ctx.lineTo(x, this.enemyOriginY + 18);
+      ctx.closePath();
+      ctx.fill();
+    }
     ctx.restore();
   }
 
