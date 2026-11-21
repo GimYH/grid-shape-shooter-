@@ -28,6 +28,8 @@ export interface ArchetypeConfig {
   passiveDesc: string;
   skillDesc: string;
   badge: string;
+  // v2.2 Phase 2: core stats 1-5 for the character select card bars.
+  stats: { firepower: number; mobility: number; defense: number };
 }
 
 export interface GridTile {
@@ -180,6 +182,9 @@ export interface ShrinkRect {
   w: number;
   h: number;
 }
+
+// v2.2 Phase 2: how a battle was lost (shown on the defeat screen).
+export type DefeatCause = 'KO' | 'CORE DESTROYED' | 'CONNECTION LOST';
 
 export interface GameStats {
   damageDealt: number;

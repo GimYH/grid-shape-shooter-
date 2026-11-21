@@ -447,14 +447,72 @@ NODE_ENV=production bun run start
 
 ### 수정
 - 배너 위치 `(960, 120)` → `(960, 500)`으로 이동. 중립 지대(Y 404~636, 중앙 520) 안이다. 플로팅 텍스트는 0.9초 수명 동안 35px/s로 떠올라 시작 500에서 ~468까지 가는데, 그 구간 전체가 중립 지대 안에 머문다. 워터마크(기준선 525, 글자帯 512~525)와도 겹치지 않는다(배너 글자帯 시작 시 478~500, 종료 시 ~446~468). 적 보드 하단(384)·플레이어 보드 상단(656)과도 겹치지 않는다. 문구·색상·크기(22px)는 그대로.
+- 90초 '수축 존 시작!' 배너도 같은 방식으로 `(960, 120)` → `(960, 500)` 이동(2026-11-21 네린 승인). 같은 중립 지대 위치, 문구·색상·크기(24px) 그대로.
 - 대비: `renderFloatingTexts`에 어두운 외곽선 추가 — 워터마크와 같은 `rgba(3, 6, 12, 0.85)`, `lineWidth = max(3, fontSize/5)`로 `strokeText`를 `fillText`보다 먼저 그린다. 모든 플로팅 텍스트에 일괄 적용돼 밝은 타일 위에서도 읽힌다. 기존 글로우·색상·폰트는 그대로.
 
 ### 건드리지 않은 것 (지시대로)
 - HUD 상단 알림 필(`GameHUD.tsx` "수축 중심 고정 N초 전!") 문구·위치·어순 그대로. 지시서 어순("10초 후 수축 중심 고정!")과의 차이는 이번 범위가 아니다.
-- 90초 '수축 존 시작!' 배너(`GameEngine.ts:414`, `(960, 120)`)도 같은 겹침 문제가 있지만 이번 범위가 아니라 그대로 둔다. 보고만 한다.
 
 ### 검증 (2026-11-21)
 - `npx tsc --noEmit` 통과, `npm run build` 통과(✓ built in 18.89s).
-- 신규 테스트 15/15 통과 (`~/workspace/grid-shape-shooter/banner-2026-11-21.test.ts`, `npx tsx`로 실행): 배너 문구·색상·크기·중앙 정렬 그대로, 시작/종료 Y가 중립 지대 안, 글자帯가 적 보드 하단·플레이어 보드 상단·워터마크와 겹치지 않음, 외곽선 strokeText 존재·색상 일치·fill보다 먼저 그려짐. 첫 실행에서 외곽선 4건이 실패했는데 테스트가 호출부가 아니라 메서드 본문을 잘못 추출한 테스트 버그였고, 메서드 본문 추출로 고친 뒤 15/15 통과. 게임 코드는 건드리지 않았다.
+- 신규 테스트 17/17 통과 (`~/workspace/grid-shape-shooter/banner-2026-11-21.test.ts`, `npx tsx`로 실행): 배너 문구·색상·크기·중앙 정렬 그대로, 시작/종료 Y가 중립 지대 안, 글자帯가 적 보드 하단·플레이어 보드 상단·워터마크와 겹치지 않음, 외곽선 strokeText 존재·색상 일치·fill보다 먼저 그려짐. 첫 실행에서 외곽선 4건이 실패했는데 테스트가 호출부가 아니라 메서드 본문을 잘못 추출한 테스트 버그였고, 메서드 본문 추출로 고친 뒤 15/15 통과. 게임 코드는 건드리지 않았다. 이후 90초 배너 이동(960,500) 검사 2건 추가해 17/17.
 - 기존 테스트 회귀 없음: 엣지케이스 28/28, 버그 수정 라운드 19/19 재통과.
 - 미검증(브라우저 필요): 80초 예고 배너 실화면(중립 지대 표시·대비).
+
+## v2.2 Phase 2 — HUD/UX/게임 필 (2026-11-21, 로컬 작업만 · 미배포)
+
+TASK.md Phase 2 중 아직 안 된 항목만 구현했다. Phase 1·3은 이전 라운드(v2.2/v2.3 + 버그 수정·엣지케이스)에서 이미 완료돼 다시 하지 않았다. 푸시·배포 없음.
+
+### 구현한 것
+
+**2.1 진입·결판 연출**
+- 진입 카운트다운 1.5초 (3→2→1→FIGHT, 각 0.45초 + FIGHT 0.15초): `COUNTDOWN_MS`/`COUNTDOWN_STEP_MS`/`countdownLabel()` (`src/game/GameEngine.ts`), 카운트다운 중 업데이트 정지·렌더 계속, 모든 전투 입력 동결(이동 키는 먼저 등록돼 카운트다운 후 바로 움직임). 오버레이는 캔버스 중앙 120px (`GameEngine.render()`).
+- 결판 슬로우모션 0.8초 (타임스케일 0.25): `SLOWMO_DURATION_S`/`SLOWMO_TIMESCALE`, GameStatus에 `'slowmo'` 추가, 12곳의 승리/패배/스테이지 클리어 지점을 `beginSlowmo(result, cause)`로 경유 (GameEngine.ts). 패배 원인 `DefeatCause` ('KO' | 'CORE DESTROYED' | 'CONNECTION LOST', `src/types/game.ts`).
+- FTUE 고스트 힌트: 1스테이지 첫 5초만, 플레이어 보드 위 반투명 필 3개 (WASD 이동 / SPACE 발사 / X 디스카드), 마지막 1.5초 페이드아웃 (GameEngine.render()).
+
+**2.2 Zone HUD (기존 3단 콕핏 구조 유지, 요소만 녹임)**
+- 캐릭터 부착 HP 바: 48×6px, +30px 아래 / 끝단 행에서 −32px 위로 자동 반전, 25HP 눈금선, `displayHp` 기반 붉은 잔상 바 (45 HP/s로 이징, 힐 시 즉시 스냅), 흰 실드 오버레이, 디스카드 핍 3개 (4px), 감속 시 노란 파동 링 (`src/game/Renderer.ts` `renderCharacterHud`, `renderPlayer`/`renderEnemy`에서 호출). `displayHp`는 CharacterController/AIController `update()`에서 이징, `reset()`/`setStage()`에서 초기화.
+- 후방 코어 50% 눈금선 (`renderCore`), 전선 발광 라인 (플레이어 1~2행 하단 / 적 3~4행 상단, `renderGrid`), 클러스터 크기 숫자 (중심점 원형 배지, `renderClusterOutlines`), 발사 레인 가이드 (클러스터 열마다 수직 점선, 플레이어 위·적 아래).
+- 초상화 컷인: 스킬 발동 (직업 스킬명, 1.0초) / 콤보 7 달성 (COMBO x7, 1.2초, P1·P2) / 보스 2페이즈 각성 (OMNI-AWAKENING, 1.5초, 1회). 중립 지대 우측 끝 (x 1342~1472, 우측 DOM 콕핏과 겹치지 않음), 슬라이드인 + 페이드, 초상화는 생성자에서 `ARCHETYPE_PORTRAITS`로 프리로드 (`Renderer.renderCutin`).
+- 거부 타일 흔들림: `Renderer.rejectTile` 필드, 해당 타일 x ±3px 흔들림 (`renderGrid`).
+
+**2.4 캐릭터 선택·온라인**
+- 캐릭터 선택 카드 스탯 3개 바 (화력/기동/수비, 5칸 세그먼트, 직업색): `ArchetypeConfig.stats` (`src/types/game.ts`, `src/game/archetypes.ts` — lancer 4/3/2, wave 3/2/5, sniper 4/3/2, painter 3/2/3, transporter 2/5/2, speedster 3/5/1, monochrome 5/2/3), 카드 렌더링 (`src/components/CharacterSelectModal.tsx`). 1줄 요약은 기존 `title` 필드 (전부 10자 이내)를 그대로 쓴다.
+- 전투 중 핑 ms 표시: 서버가 `pong`에 타임스탬프를 에코 (`server.ts:629` 기존 동작), `NetworkManager.pingMs` 측정, 온라인 시 슬림 바에 "핑 Nms" 칩 (`src/components/GameHUD.tsx`).
+- 재경기 투표 1/2 표시: 서버가 `rematch_request` 수신 시 양쪽에 `{ type: 'rematch_update', votes }` 브로드캐스트 (`server.ts`), `NetworkManager.rematchVotes`/`onRematchUpdate` → `GameEngine.rematchVotes`, 결과 모달에 "재경기 투표 N/2" (`src/components/GameOverModal.tsx`).
+- 패배 원인 표시: 결과 모달에 원인별 문구 (격추 패배 / 코어 파괴 패배 / 연결 끊김).
+
+**2.5 입력·피드백·사운드**
+- 선입력 버퍼 100ms + 발사 유예 60ms: `INPUT_BUFFER_MS`/`LAUNCH_GRACE_MS`, `bufferInput`/`flushInputBuffers`/`graceCluster` (GameEngine.ts). 스킬·대시·디스카드도 버퍼링, 버퍼 재시도는 조용히 (원래 누름에만 거부 피드백).
+- 거부 피드백: 3칸 미만 발사 시 타일 3px 흔들림 + 거부음 + "3+" 팝업 0.3초 (`rejectLaunchFeedback`); 쿨타임/0스택 입력 시 아이콘 빨간 플래시 + 흔들림 + 거부음 (`rejectActionFeedback` → `engine.rejectFlash`, GameHUD 카드에 `reject-shake` + 빨간 링, `src/index.css` 신규 `@keyframes reject-shake`).
+- 스킬 준비 완료 알림음: 쿨타임→준비 전이에 2음 차임 (880→1318.5Hz, `soundManager.playSkillReady()`), P1·P2 각각.
+- 마이크로 히트스톱 35ms + 흔들림: 6칸+ 충돌 승리 (`hitstopTimer` 0.035 + shake 0.25) / 코어 50% 붕괴 (0.035 + shake 0.3). 화면 흔들림은 설정 토글 연동 (`shakeEnabled`가 false면 렌더 시 shake 0).
+- 색각 심볼: 타일 중앙 저투명도 기하학 (적 삼각형 / 청 사각형 / 황 원형, `renderTile`).
+- 사운드: 마스터 게인 노드 + `setVolume`/`getVolume`/`dest()` (`src/audio/soundManager.ts`), 전 12개 gain 연결을 `dest()`로 경유. 거부음 `playReject()` (110→85Hz 스퀘어 버즈).
+- 설정 저장: `localStorage` 키 `gss_settings_v1` ({volume, shakeEnabled}), 엔진 생성 시 로드 (`loadSettings`/`saveSettings`).
+- 직업 전환 미니 토스트: 기존 `CLASS: X` 플로팅 텍스트 (직업명, 캐릭터 위)가 동등 기능이라 새로 만들지 않았다. 콤보 타격음 피치 상승도 기존 `playHit`의 Hz 기반 상승 (+30Hz/콤보, 최대 +260Hz)이 동등 기능이라 두지 않았다. 리필 게이지도 기존 쿨다운 타일 원형 진행 + 초 표시가 동등 기능이라 두지 않았다. 90초 수축 타이머·콤보 4초 감소 바·아이콘 독·1~7 전환 바·최소화 아이콘(일시정지·음소거)은 이미 있던 것을 그대로 둔다.
+
+**일시정지 모달 업그레이드 (`src/App.tsx`)**
+- 비주얼 키맵 1장 (8행: WASD/방향키 이동, SPACE 발사, Q/Ctrl 스킬, Shift 대시, X/E 디스카드, 1~7 직업 전환, ESC/P 일시정지, R 재시작), SFX 볼륨 슬라이더 (엔진 볼륨과 양방향 동기화), 화면 흔들림 토글, Restart (R) 버튼 추가.
+- 결과 모달 잠금 0.6초: 상태 변경 시 `resultShownAtRef` 기록, 0.6초 내 키 무시. 단축키: 패배 시 [R] 재시작, 승리/스테이지 클리어 시 [Space] 다음 스테이지 (싱글 30스테이지 미만) 또는 재시작. 일시정지 중 [R]도 재시작.
+- 터치 오버레이 `pointer: coarse` 게이트: `OnscreenControls`는 coarse 포인터 기기에서만 렌더 (데스크톱 가로 화면에서 터치 패드 사라짐). `'slowmo'` 상태에서도 HUD/조이스틱/스크롤 버튼 유지, 스크롤 시프트 리셋 조건에도 포함.
+
+**테스트 중 발견해 고친 실제 버그 1건**
+- `ProjectileManager.onClashWin`이 승자 셀 수를 전달하지 않아 GameEngine의 6칸+ 히트스톱 조건 (`winnerCells >= 6`)이 절대 참이 될 수 없었다. 타입을 `(winnerOwner, winnerCells?) => void`로 바꾸고 두 호출부에 `pProj.cells.length`/`eProj.cells.length`를 넘겼다 (`src/game/ProjectileManager.ts:19,295,300`).
+
+### 이미 돼서 건드리지 않은 것
+- 16:9 고정 뷰포트 + 3단 HUD, 슬림 바 (음소거/일시정지/재시작/홈 + 수축 카운트다운 필), 콤보 블록 + 4초 감소 바, 클러스터 미리보기, 스킬/대시/디스카드 카드, [1]–[7] 전환 바, 코어 바, 클러스터 외곽선, 모양 배지, 벡터 형상 7종+보스, 대시 잔상 3개, 스킬 준비 펄스 링, 수축 밖 빨간 점선 링, 오버드라이브 오라, 실드 링 (모노크롬 흰색), 대시 쿨타임 아크, 포획 오브, 코어 렌더 + 균열, 화면 흔들림 + 0.05초 히트스톱 (피격 시), 결과 통계 4개 값 (클리어 타임·최대 콤보·중립 승리·가한 데미지 — 2칸+3칸 그리드에 이미 있음), 온라인 로비 (6자리 코드·링크 복사 토스트·Ready 배지·서버 조율 재경기·이탈 승리), 서버 `pong` 타임스탬프 에코.
+- Phase 1·3 전부: 카운터 1발당 1회 쿨감 (3칸+ 조건 포함), 붕괴 시 포획 해제, 극후반 2칸 완화, 공통 헬퍼, OVERDRIVE SURGE 1발 해제, playRefill 연결, 30스테이지·스테이지 선택 모달·진행 저장, 유틸리티 AI·보스 7스킬·2페이즈 각성, 배너 중립 지대 이동.
+
+### 하지 않은 것 (의도된 선택 / 별도 작업)
+- 보스 각성 전체 화면 붉은 균열 플래시 (충격파+오라+경고음이 의도된 연출).
+- 배경 이미지 5장 (네온 몫).
+- AI 가중치 수치 변경.
+- 80초 배너 HUD 필 문구 어순 ("수축 중심 고정 N초 전!").
+- 아케이드 3종, 90초 배너 푸시·배포.
+
+### 검증 (2026-11-21)
+- `npx tsc --noEmit` 통과, `npm run build` 통과 (✓ built in 19.00s).
+- 신규 테스트 74/74 통과 (`~/workspace/grid-shape-shooter/phase2-2026-11-21.test.ts`, `npx tsx`로 실행): 카운트다운 상수·라벨 단계 (0/449→3, 450→2, 900→1, 1350→FIGHT!), 슬로우모/버퍼/유예 상수, 스탯 1~5 + 제목 10자 이내, colorHash 45자, 렌더러·사운드·네트워크·서버·App·모달·CSS 존재 검사. GameEngine.ts는 직접 import하지 않았다 (Renderer 경유 portrait .jpg를 tsx가 못 읽음) — 순수 함수는 소스에서 상수를 파싱해 분기를 재실행하는 방식으로 검증했다.
+- 기존 테스트 회귀 없음: 버그 수정 라운드 19/19, 엣지케이스 28/28, 배너 17/17 재통과.
+- 미검증(브라우저 필요): 카운트다운 오버레이·슬로우모 체감·FTUE 힌트·컷인·캐릭터 부착 HP 바·레인 가이드·색각 심볼 실화면, 스킬 준비 차임·거부음·히트스톱 체감, 볼륨 슬라이더·흔들림 토글 동작, coarse 게이트 실기기 동작, 핑 칩·재경기 투표 실전 표시.

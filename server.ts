@@ -777,6 +777,12 @@ wss.on('connection', (ws: AliveWebSocket) => {
           if (!room || !room.p1 || !room.p2) return;
           const me = userRole === 'p1' ? room.p1 : room.p2;
           if (me) me.rematchRequested = true;
+          // v2.2 Phase 2: broadcast the vote count (1/2, 2/2) so both
+          // result screens can show it while waiting for the other side.
+          const votes = (room.p1.rematchRequested ? 1 : 0) + (room.p2.rematchRequested ? 1 : 0);
+          const votePayload = JSON.stringify({ type: 'rematch_update', votes });
+          if (room.p1.ws.readyState === WebSocket.OPEN) room.p1.ws.send(votePayload);
+          if (room.p2.ws.readyState === WebSocket.OPEN) room.p2.ws.send(votePayload);
           // Both players asked: restart with ONE shared seed.
           if (room.p1.rematchRequested && room.p2.rematchRequested) {
             sendBattleStart(room);

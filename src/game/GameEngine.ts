@@ -5,7 +5,7 @@ import { ProjectileManager } from './ProjectileManager';
 import { ParticleSystem } from './ParticleSystem';
 import { CanvasRenderer } from './Renderer';
 import { soundManager } from '../audio/soundManager';
-import { ArchetypeId, Cluster, CoreState, GameMode, GameStats, ShrinkPhase, ShrinkRect, SkillEffect } from '../types/game';
+import { ArchetypeId, Cluster, CoreState, DefeatCause, GameMode, GameStats, ShrinkPhase, ShrinkRect, SkillEffect } from '../types/game';
 import { ARCHETYPES } from './archetypes';
 import { STAGES } from './stages';
 import {
@@ -40,9 +40,30 @@ export type GameStatus =
   | 'online_lobby'
   | 'playing'
   | 'paused'
+  | 'slowmo'
   | 'stage_clear'
   | 'victory'
   | 'defeat';
+
+// v2.2 Phase 2: battle-start countdown (1.5s: 3 → 2 → 1 → FIGHT, 0.45s
+// each) and decisive-moment slow motion (0.8s at 0.25x time scale).
+export const COUNTDOWN_MS = 1500;
+export const COUNTDOWN_STEP_MS = 450;
+export const SLOWMO_DURATION_S = 0.8;
+export const SLOWMO_TIMESCALE = 0.25;
+// v2.2 Phase 2: input buffer (100ms) and launch grace (60ms — a launch
+// pressed just after stepping off a 3+ cluster still fires it).
+export const INPUT_BUFFER_MS = 100;
+export const LAUNCH_GRACE_MS = 60;
+
+// v2.2 Phase 2: countdown phase label from elapsed milliseconds since
+// the countdown started. Exported for headless verification.
+export function countdownLabel(elapsedMs: number): '3' | '2' | '1' | 'FIGHT!' {
+  if (elapsedMs < COUNTDOWN_STEP_MS) return '3';
+  if (elapsedMs < COUNTDOWN_STEP_MS * 2) return '2';
+  if (elapsedMs < COUNTDOWN_STEP_MS * 3) return '1';
+  return 'FIGHT!';
+}
 
 // v2.2 anti-instant-kill: no single direct character hit deals more than
 // 35 damage. (Core hits are not capped.)
@@ -124,6 +145,72 @@ export class GameEngine {
   private battleStartAt: number = 0;
   public screenShake: number = 0;
   public hitstopTimer: number = 0;
+  // v2.2 Phase 2: battle-start countdown end (performance.now ms). While
+  // now < countdownEndAt the battle is frozen and input is ignored.
+  public countdownEndAt: number = 0;
+  // v2.2 Phase 2: decisive-moment slow motion. pendingResult is the
+  // status the battle flips to when slowmoTimer runs out.
+  public slowmoTimer: number = 0;
+  public pendingResult: 'victory' | 'defeat' | 'stage_clear' | null = null;
+  public defeatCause: DefeatCause | null = null;
+  // v2.2 Phase 2: settings (localStorage 'gss_settings_v1').
+  public shakeEnabled: boolean = true;
+  // v2.2 Phase 2: online rematch vote state (server 'rematch_update').
+  public rematchVotes: number = 0;
+  public rematchRequested: boolean = false;
+  // v2.2 Phase 2: portrait cut-in { portrait, label, until }.
+  public cutin: { portrait: ArchetypeId; label: string; until: number; durationMs: number } | null = null;
+  // v2.2 Phase 2: rejection feedback — a shaken tile and a flashing HUD
+  // icon, both with a performance.now expiry.
+  public rejectTile: { owner: 'player' | 'enemy'; col: number; row: number; until: number } | null = null;
+  public rejectFlash: { kind: 'skill' | 'dash' | 'discard'; playerNum: 1 | 2; until: number } | null = null;
+  private awakeningCutinShown: boolean = false;
+  private wasSkillReady: boolean = true;
+  private wasSkillReady2: boolean = true;
+  private inputBuffer: Record<1 | 2, { action: 'launch' | 'skill' | 'dash' | 'discard'; until: number } | null> = { 1: null, 2: null };
+  private lastLaunchable: Record<1 | 2, { col: number; row: number; at: number } | null> = { 1: null, 2: null };
+
+  // v2.2 Phase 2: is the battle-start countdown still running?
+  public isCountingDown(): boolean {
+    return this.status === 'playing' && performance.now() < this.countdownEndAt;
+  }
+
+  // v2.2 Phase 2: load/save SFX volume + shake toggle.
+  private loadSettings() {
+    try {
+      const raw = localStorage.getItem('gss_settings_v1');
+      if (!raw) return;
+      const s = JSON.parse(raw) as { volume?: unknown; shakeEnabled?: unknown };
+      if (typeof s.volume === 'number') soundManager.setVolume(s.volume);
+      if (typeof s.shakeEnabled === 'boolean') this.shakeEnabled = s.shakeEnabled;
+    } catch {
+      // Corrupt settings: keep defaults.
+    }
+  }
+
+  public saveSettings() {
+    try {
+      localStorage.setItem(
+        'gss_settings_v1',
+        JSON.stringify({ volume: soundManager.getVolume(), shakeEnabled: this.shakeEnabled })
+      );
+    } catch {
+      // Storage unavailable: settings stay in memory only.
+    }
+  }
+
+  public toggleShake(): boolean {
+    this.shakeEnabled = !this.shakeEnabled;
+    this.saveSettings();
+    this.triggerStateUpdate();
+    return this.shakeEnabled;
+  }
+
+  public setSfxVolume(v: number) {
+    soundManager.setVolume(v);
+    this.saveSettings();
+    this.triggerStateUpdate();
+  }
 
   public comboCount: number = 0;
   public comboTimer: number = 0;
@@ -216,6 +303,7 @@ export class GameEngine {
     this.enemyBoard = new GridBoard('enemy');
     this.particleSystem = new ParticleSystem();
     this.projectileMgr = new ProjectileManager();
+    this.loadSettings();
 
     const pStartX = this.renderer.playerOriginX + (GRID_COLS * (this.renderer.cellW + this.renderer.gap)) / 2;
     const pStartY = this.renderer.playerOriginY + (GRID_ROWS * (this.renderer.cellH + this.renderer.gap)) / 2;
@@ -228,14 +316,59 @@ export class GameEngine {
 
     // v2.2 counter-overcharge: a clash winner's launcher gets -1.0s skill
     // cooldown and the win is counted for the result screen.
-    this.projectileMgr.onClashWin = (winnerOwner) => {
+    // v2.2 Phase 2: a 6+ cell clash win also fires a 35ms micro-hitstop
+    // + a small shake (big-block collision feedback).
+    this.projectileMgr.onClashWin = (winnerOwner, winnerCells = 0) => {
       this.stats.clashesWon++;
       if (winnerOwner === 'player') {
         this.player.skillCooldownRemaining = Math.max(0, this.player.skillCooldownRemaining - 1.0);
       } else if (this.player2) {
         this.player2.skillCooldownRemaining = Math.max(0, this.player2.skillCooldownRemaining - 1.0);
       }
+      if (winnerCells >= 6) {
+        this.hitstopTimer = Math.max(this.hitstopTimer, 0.035);
+        this.screenShake = Math.max(this.screenShake, 0.25);
+      }
     };
+
+    // v2.2 Phase 2: the server broadcasts the rematch vote count; show it
+    // on the result screen (1/2, 2/2).
+    networkManager.onRematchUpdate = (votes) => {
+      this.rematchVotes = votes;
+      this.triggerStateUpdate();
+    };
+  }
+
+  // v2.2 Phase 2: transient Phase 2 state reset + 1.5s start countdown.
+  // Called by every battle start (single / online / royale / rematch).
+  private beginBattle() {
+    this.countdownEndAt = performance.now() + COUNTDOWN_MS;
+    this.slowmoTimer = 0;
+    this.pendingResult = null;
+    this.defeatCause = null;
+    this.cutin = null;
+    this.rejectTile = null;
+    this.rejectFlash = null;
+    this.inputBuffer = { 1: null, 2: null };
+    this.lastLaunchable = { 1: null, 2: null };
+    this.rematchVotes = 0;
+    this.rematchRequested = false;
+    this.wasSkillReady = true;
+    this.wasSkillReady2 = true;
+    this.awakeningCutinShown = false;
+  }
+
+  // v2.2 Phase 2: decisive-moment slow motion. The battle keeps running
+  // at 0.25x for 0.8s, then flips to the pending result (the result
+  // modal opens only after the slow-mo, so the defeat cause lines up
+  // with the moment the player sees it).
+  private beginSlowmo(result: 'victory' | 'defeat' | 'stage_clear', cause?: DefeatCause) {
+    if (this.status !== 'playing') return;
+    this.pendingResult = result;
+    this.defeatCause = result === 'defeat' ? cause ?? null : null;
+    this.status = 'slowmo';
+    this.slowmoTimer = SLOWMO_DURATION_S;
+    this.triggerStateUpdate();
   }
 
   // v2.2: reset both rear cores and the whole shrink-zone state. Called on
@@ -284,6 +417,10 @@ export class GameEngine {
     if (core.collapsed) return;
     core.collapsed = true;
     board.collapseSides();
+    // v2.2 Phase 2: a core hitting 50% fires a 35ms micro-hitstop + a
+    // shake (the collapse is a big-board event, like a 6+ collision).
+    this.hitstopTimer = Math.max(this.hitstopTimer, 0.035);
+    this.screenShake = Math.max(this.screenShake, 0.3);
     const originX = side === 'player' ? this.renderer.playerOriginX : this.renderer.enemyOriginX;
     const step = this.renderer.cellW + this.renderer.gap;
     const centerX = (col: number) => originX + col * step + this.renderer.cellW / 2;
@@ -411,7 +548,7 @@ export class GameEngine {
         normY: Math.max(0, Math.min(1, (this.shrinkAnchor.y - this.renderer.playerOriginY) / totalH)),
       });
     }
-    this.particleSystem.addFloatingText(960, 120, '수축 존 시작!', '#FF4444', 24);
+    this.particleSystem.addFloatingText(960, 500, '수축 존 시작!', '#FF4444', 24);
     soundManager.playBossWarning();
     this.triggerStateUpdate();
   }
@@ -551,6 +688,10 @@ export class GameEngine {
   private handleKeyDown = (e: KeyboardEvent) => {
     this.keys[e.code] = true;
 
+    // v2.2 Phase 2: all battle input is frozen during the start countdown
+    // (Escape/P still work so the player can pause out of it).
+    if (this.isCountingDown() && e.code !== 'Escape' && e.code !== 'KeyP') return;
+
     // Number keys 1~7 to instant switch archetype (P1 in single/boss mode).
     // In royale, 1~4 are the targeting modes instead (see below).
     if ((this.mode === 'single' || this.mode === 'boss') && ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7'].includes(e.code)) {
@@ -678,6 +819,7 @@ export class GameEngine {
     this.status = 'playing';
     this.gameTime = 0;
     this.battleStartAt = performance.now();
+    this.beginBattle();
 
     if (mode === 'boss') {
       this.currentStage = 30;
@@ -767,6 +909,7 @@ export class GameEngine {
     this.status = 'playing';
     this.gameTime = 0;
     this.battleStartAt = performance.now();
+    this.beginBattle();
     this.networkSyncTimer = 0;
     this.boardSyncTimer = 0;
     this.boardHashStreak = 0;
@@ -835,7 +978,7 @@ export class GameEngine {
       // where this callback gets overwritten by the lobby modal.
       if (this.status === 'playing' && !this.peerDisconnectHandled) {
         this.peerDisconnectHandled = true;
-        this.status = 'victory';
+        this.beginSlowmo('victory');
         this.particleSystem.addFloatingText(960, 540, 'OPPONENT DISCONNECTED!', '#FF3366', 22);
         soundManager.playVictory();
         this.triggerStateUpdate();
@@ -858,6 +1001,7 @@ export class GameEngine {
     this.status = 'playing';
     this.gameTime = 0;
     this.battleStartAt = performance.now();
+    this.beginBattle();
     this.networkSyncTimer = 0;
     this.boardSyncTimer = 0;
     this.boardHashStreak = 0;
@@ -1054,7 +1198,9 @@ export class GameEngine {
       // screen was shown when my HP hit 0 — this fills in the rank).
       this.royaleRank = packet.rank;
       this.royaleEliminated = true;
-      this.status = 'defeat';
+      // Usually the local HP-0 check already started the slow-mo; only
+      // start it here if the ko packet arrived first.
+      this.beginSlowmo('defeat', this.player.hp <= 0 ? 'KO' : 'CORE DESTROYED');
       soundManager.playDefeat();
       this.triggerStateUpdate();
       return;
@@ -1075,7 +1221,7 @@ export class GameEngine {
     // Last one standing wins.
     if (packet.aliveCount <= 1 && !this.royaleEliminated && this.status === 'playing') {
       this.royaleRank = 1;
-      this.status = 'victory';
+      this.beginSlowmo('victory');
       soundManager.playVictory();
       this.triggerStateUpdate();
     }
@@ -1396,8 +1542,94 @@ export class GameEngine {
   }
 
   // Player Launch (P1 = bottom board, P2 = top board)
-  public handlePlayerLaunch(playerNum: 1 | 2 = 1, broadcast: boolean = true) {
-    if (this.status !== 'playing') return;
+  // v2.2 Phase 2: input buffer (100ms) + launch grace (60ms) + rejection
+  // feedback. Handlers below return success; a failed local press is
+  // buffered once and retried next frame (no feedback on the retry).
+  private tryBufferedAction(action: 'launch' | 'skill' | 'dash' | 'discard', playerNum: 1 | 2): boolean {
+    switch (action) {
+      case 'launch':
+        return this.handlePlayerLaunch(playerNum, true, true);
+      case 'skill':
+        return this.handlePlayerSkill(playerNum, true, true);
+      case 'dash':
+        return this.handlePlayerDash(playerNum, true, true);
+      case 'discard':
+        return this.handlePlayerDiscard(playerNum, true, true);
+    }
+  }
+
+  private flushInputBuffers() {
+    const now = performance.now();
+    ([1, 2] as const).forEach((pn) => {
+      const buf = this.inputBuffer[pn];
+      if (!buf) return;
+      if (now > buf.until) {
+        this.inputBuffer[pn] = null;
+        return;
+      }
+      if (this.tryBufferedAction(buf.action, pn)) this.inputBuffer[pn] = null;
+    });
+  }
+
+  private bufferInput(action: 'launch' | 'skill' | 'dash' | 'discard', playerNum: 1 | 2) {
+    this.inputBuffer[playerNum] = { action, until: performance.now() + INPUT_BUFFER_MS };
+  }
+
+  // v2.2 Phase 2: failed launch — the tile shakes, a low buzz plays, and
+  // a "3+" popup marks the spot. Buffered for 100ms in case a refill
+  // completes the cluster.
+  private rejectLaunchFeedback(playerNum: 1 | 2, actor: PlayerCharacter) {
+    const owner = playerNum === 1 ? 'player' : 'enemy';
+    this.rejectTile = { owner, col: actor.currentCol, row: actor.currentRow, until: performance.now() + 300 };
+    soundManager.playReject();
+    this.particleSystem.addFloatingText(actor.x, actor.y - 40, '3+', '#FF6666', 15);
+    this.bufferInput('launch', playerNum);
+    this.triggerStateUpdate();
+  }
+
+  // v2.2 Phase 2: skill/dash/discard pressed on cooldown or with an empty
+  // magazine — the HUD icon flashes red (GameHUD reads rejectFlash).
+  private rejectActionFeedback(kind: 'skill' | 'dash' | 'discard', playerNum: 1 | 2) {
+    this.rejectFlash = { kind, playerNum, until: performance.now() + 300 };
+    soundManager.playReject();
+    this.bufferInput(kind, playerNum);
+    this.triggerStateUpdate();
+  }
+
+  // v2.2 Phase 2: remember the last launchable 3+ cluster under the actor
+  // so a launch pressed up to 60ms after stepping off it still fires.
+  private trackLaunchablePad(playerNum: 1 | 2) {
+    const actor = playerNum === 1 ? this.player : this.player2;
+    const board = playerNum === 1 ? this.playerBoard : this.enemyBoard;
+    if (!actor) return;
+    const cluster = board.getClusterAt(actor.currentCol, actor.currentRow);
+    if (cluster && cluster.isActivePad && cluster.tiles.length >= 3) {
+      this.lastLaunchable[playerNum] = { col: actor.currentCol, row: actor.currentRow, at: performance.now() };
+    }
+  }
+
+  // v2.2 Phase 2: the cluster a grace-period launch should fire, if the
+  // actor stepped off a launchable 3+ cluster within the last 60ms.
+  private graceCluster(playerNum: 1 | 2): Cluster | null {
+    const last = this.lastLaunchable[playerNum];
+    if (!last || performance.now() - last.at > LAUNCH_GRACE_MS) return null;
+    const board = playerNum === 1 ? this.playerBoard : this.enemyBoard;
+    const cluster = board.getClusterAt(last.col, last.row);
+    return cluster && cluster.isActivePad && cluster.tiles.length >= 3 ? cluster : null;
+  }
+
+  // v2.2 Phase 2: portrait cut-in (skill cast / combo 7+ / boss awakening).
+  public showCutin(portrait: ArchetypeId, label: string, ms: number) {
+    this.cutin = { portrait, label, until: performance.now() + ms, durationMs: ms };
+  }
+
+  // v2.2 Phase 2: combo-7 portrait cut-in (fires once per climb to 7).
+  private comboCutin(count: number, portrait: ArchetypeId) {
+    if (count === 7) this.showCutin(portrait, 'COMBO x7', 1200);
+  }
+
+  public handlePlayerLaunch(playerNum: 1 | 2 = 1, broadcast: boolean = true, fromBuffer: boolean = false): boolean {
+    if (this.status !== 'playing' || this.isCountingDown()) return false;
 
     const actor = playerNum === 1 ? this.player : this.player2;
     const board = playerNum === 1 ? this.playerBoard : this.enemyBoard;
@@ -1405,9 +1637,18 @@ export class GameEngine {
     const originX = playerNum === 1 ? this.renderer.playerOriginX : this.renderer.enemyOriginX;
     const originY = playerNum === 1 ? this.renderer.playerOriginY : this.renderer.enemyOriginY;
 
-    if (!actor) return;
-    const cluster = board.getClusterAt(actor.currentCol, actor.currentRow);
-    if (!cluster) return;
+    if (!actor) return false;
+    let cluster = board.getClusterAt(actor.currentCol, actor.currentRow);
+    // v2.2 Phase 2: launch grace — stepped off a launchable 3+ cluster
+    // within 60ms? Fire that cluster instead of failing.
+    if ((!cluster || !cluster.isActivePad) && !fromBuffer) {
+      const graced = this.graceCluster(playerNum);
+      if (graced) cluster = graced;
+    }
+    if (!cluster) {
+      if (!fromBuffer) this.rejectLaunchFeedback(playerNum, actor);
+      return false;
+    }
 
     // Monochrome special rule
     if (actor.archetypeId === 'monochrome' && cluster.color !== 'red') {
@@ -1423,10 +1664,13 @@ export class GameEngine {
       this.particleSystem.addFloatingText(actor.x, actor.y - 30, '+10 SHIELD ABSORBED!', '#33CCFF', 16);
       this.particleSystem.addShockwave(actor.x, actor.y, 70, '#33CCFF');
       this.triggerStateUpdate();
-      return;
+      return true;
     }
 
-    if (!cluster.isActivePad) return;
+    if (!cluster.isActivePad) {
+      if (!fromBuffer) this.rejectLaunchFeedback(playerNum, actor);
+      return false;
+    }
 
     // Painter passive roll happens once here; the result is sent with the
     // launch so the remote side paints the same tiles.
@@ -1517,12 +1761,16 @@ export class GameEngine {
       this.particleSystem.addFloatingText(actor.x, actor.y - 62, 'FRONTLINE!', '#FFD166', 15);
     }
 
+    // Launched tiles are gone — the grace memory must not fire the same
+    // cluster twice.
+    this.lastLaunchable[playerNum] = null;
     this.triggerStateUpdate();
+    return true;
   }
 
   // Player Skill
-  public handlePlayerSkill(playerNum: 1 | 2 = 1, broadcast: boolean = true) {
-    if (this.status !== 'playing') return;
+  public handlePlayerSkill(playerNum: 1 | 2 = 1, broadcast: boolean = true, fromBuffer: boolean = false): boolean {
+    if (this.status !== 'playing' || this.isCountingDown()) return false;
 
     const actor = playerNum === 1 ? this.player : this.player2;
     const board = playerNum === 1 ? this.playerBoard : this.enemyBoard;
@@ -1530,7 +1778,7 @@ export class GameEngine {
     const originY = playerNum === 1 ? this.renderer.playerOriginY : this.renderer.enemyOriginY;
     const ownerStr = playerNum === 1 ? 'player' : 'enemy';
 
-    if (!actor) return;
+    if (!actor) return false;
 
     // Capture the pre-skill cell: the remote side reproduces the skill from
     // this position (e.g. Speedster blink starts here).
@@ -1585,17 +1833,24 @@ export class GameEngine {
     }
 
     if (activated) {
+      // v2.2 Phase 2: portrait cut-in on a skill cast (1.0s).
+      this.showCutin(actor.archetypeId, ARCHETYPES[actor.archetypeId].skillName, 1000);
       this.triggerStateUpdate();
+      return true;
     }
+    // A Transporter grab cancel is a successful action, not a rejection.
+    if (grabCanceled) return true;
+    if (!fromBuffer) this.rejectActionFeedback('skill', playerNum);
+    return false;
   }
 
   // Player Discard (3-stack magazine, 0.45s refill)
-  public handlePlayerDiscard(playerNum: 1 | 2 = 1, broadcast: boolean = true) {
-    if (this.status !== 'playing') return;
+  public handlePlayerDiscard(playerNum: 1 | 2 = 1, broadcast: boolean = true, fromBuffer: boolean = false): boolean {
+    if (this.status !== 'playing' || this.isCountingDown()) return false;
 
     const actor = playerNum === 1 ? this.player : this.player2;
     const board = playerNum === 1 ? this.playerBoard : this.enemyBoard;
-    if (!actor) return;
+    if (!actor) return false;
 
     // Execute first, broadcast only on success: discarding an already-empty
     // tile must not consume the remote side's tile.
@@ -1610,15 +1865,18 @@ export class GameEngine {
         this.stats.tilesDiscarded++;
         this.triggerStateUpdate();
       }
+      return true;
     }
+    if (!fromBuffer) this.rejectActionFeedback('discard', playerNum);
+    return false;
   }
 
   // Player Dash (i-frame evasion)
-  public handlePlayerDash(playerNum: 1 | 2 = 1, broadcast: boolean = true) {
-    if (this.status !== 'playing') return;
+  public handlePlayerDash(playerNum: 1 | 2 = 1, broadcast: boolean = true, fromBuffer: boolean = false): boolean {
+    if (this.status !== 'playing' || this.isCountingDown()) return false;
 
     const actor = playerNum === 1 ? this.player : this.player2;
-    if (!actor) return;
+    if (!actor) return false;
 
     // Execute first, broadcast only on success: a dash on cooldown must
     // not make the remote copy dash (and go invincible) for free.
@@ -1628,7 +1886,10 @@ export class GameEngine {
         networkManager.sendAction('dash', {});
       }
       this.triggerStateUpdate();
+      return true;
     }
+    if (!fromBuffer) this.rejectActionFeedback('dash', playerNum);
+    return false;
   }
 
   // AI launch handler
@@ -1704,10 +1965,26 @@ export class GameEngine {
       const dt = Math.min(rawDt, 0.05);
 
       if (this.status === 'playing') {
-        if (this.hitstopTimer > 0) {
+        // v2.2 Phase 2: the 1.5s start countdown freezes the battle (the
+        // canvas still renders the 3-2-1-FIGHT overlay).
+        if (this.isCountingDown()) {
+          // Frozen: no update, no input.
+        } else if (this.hitstopTimer > 0) {
           this.hitstopTimer -= dt;
         } else {
           this.update(dt);
+        }
+      } else if (this.status === 'slowmo') {
+        // v2.2 Phase 2: decisive-moment slow motion — the world keeps
+        // running at 0.25x in real time, then flips to the pending result.
+        this.slowmoTimer -= rawDt;
+        if (this.slowmoTimer > 0) {
+          this.update(dt * SLOWMO_TIMESCALE);
+        } else {
+          this.status = this.pendingResult ?? 'defeat';
+          this.pendingResult = null;
+          this.slowmoTimer = 0;
+          this.triggerStateUpdate();
         }
       }
 
@@ -1726,6 +2003,26 @@ export class GameEngine {
     this.stats.gameDuration =
       this.battleStartAt > 0 ? (performance.now() - this.battleStartAt) / 1000 : this.gameTime;
 
+    // v2.2 Phase 2: retry buffered inputs (100ms window), remember
+    // launchable pads for the 60ms launch grace, and chime once when a
+    // skill finishes cooling down.
+    this.flushInputBuffers();
+    this.trackLaunchablePad(1);
+    if (this.player2) this.trackLaunchablePad(2);
+    const skillReady = this.player.skillCooldownRemaining <= 0;
+    if (skillReady && !this.wasSkillReady) soundManager.playSkillReady();
+    this.wasSkillReady = skillReady;
+    if (this.player2) {
+      const ready2 = this.player2.skillCooldownRemaining <= 0;
+      if (ready2 && !this.wasSkillReady2) soundManager.playSkillReady();
+      this.wasSkillReady2 = ready2;
+    }
+    // v2.2 Phase 2: boss awakening portrait cut-in (once per battle).
+    if (this.enemy.isFinalBoss && this.enemy.awakened && !this.awakeningCutinShown) {
+      this.awakeningCutinShown = true;
+      this.showCutin('sniper', 'OMNI-AWAKENING', 1500);
+    }
+
     // Mid-battle disconnect detection. The server notifies the remaining
     // player via peer_left, but if the lobby modal overwrote the callback
     // (it re-registers its handlers on every render), the notification
@@ -1735,7 +2032,7 @@ export class GameEngine {
     if (this.isOnline && this.mode !== 'royale' && this.status === 'playing' && !this.peerDisconnectHandled) {
       if (!networkManager.isConnected) {
         this.peerDisconnectHandled = true;
-        this.status = 'defeat';
+        this.beginSlowmo('defeat', 'CONNECTION LOST');
         this.particleSystem.addFloatingText(960, 540, 'CONNECTION LOST', '#FF3366', 22);
         soundManager.playDefeat();
         this.triggerStateUpdate();
@@ -1743,7 +2040,7 @@ export class GameEngine {
       }
       if (!networkManager.opponentConnected) {
         this.peerDisconnectHandled = true;
-        this.status = 'victory';
+        this.beginSlowmo('victory');
         this.particleSystem.addFloatingText(960, 540, 'OPPONENT DISCONNECTED!', '#FF3366', 22);
         soundManager.playVictory();
         this.triggerStateUpdate();
@@ -1753,7 +2050,7 @@ export class GameEngine {
     if (this.isOnline && this.mode === 'royale' && this.status === 'playing' && !this.peerDisconnectHandled) {
       if (!networkManager.isConnected) {
         this.peerDisconnectHandled = true;
-        this.status = 'defeat';
+        this.beginSlowmo('defeat', 'CONNECTION LOST');
         this.particleSystem.addFloatingText(960, 540, 'CONNECTION LOST', '#FF3366', 22);
         soundManager.playDefeat();
         this.triggerStateUpdate();
@@ -2039,18 +2336,18 @@ export class GameEngine {
     if (this.mode === 'royale') {
       if (!this.royaleEliminated && (this.player.hp <= 0 || this.playerCore.hp <= 0) && this.status === 'playing') {
         this.royaleEliminated = true;
-        this.status = 'defeat';
+        this.beginSlowmo('defeat', this.player.hp <= 0 ? 'KO' : 'CORE DESTROYED');
         soundManager.playDefeat();
         this.sendRoyaleStatusIfChanged(true);
         this.triggerStateUpdate();
       }
     } else if (this.mode === 'multi' && this.player2) {
       if ((this.player2.hp <= 0 || this.enemyCore.hp <= 0) && this.status === 'playing') {
-        this.status = 'victory'; // I Won!
+        this.beginSlowmo('victory'); // I Won!
         soundManager.playVictory();
         this.triggerStateUpdate();
       } else if ((this.player.hp <= 0 || this.playerCore.hp <= 0) && this.status === 'playing') {
-        this.status = 'defeat'; // I Lost!
+        this.beginSlowmo('defeat', this.player.hp <= 0 ? 'KO' : 'CORE DESTROYED'); // I Lost!
         soundManager.playDefeat();
         this.triggerStateUpdate();
       }
@@ -2058,12 +2355,12 @@ export class GameEngine {
       // Single Mode or Boss Mode
       if ((this.enemy.hp <= 0 || this.enemyCore.hp <= 0) && this.status === 'playing') {
         if (this.mode === 'single' && this.currentStage < 30) {
-          this.status = 'stage_clear';
+          this.beginSlowmo('stage_clear');
           recordStageClear(this.currentStage);
           soundManager.playStageClear();
         } else {
           // Final boss beaten (campaign stage 30 or boss rush).
-          this.status = 'victory';
+          this.beginSlowmo('victory');
           recordStageClear(30);
           this.lastNoContinue = tryRecordNoContinue(this.campaignRun);
           this.campaignRun = null;
@@ -2071,7 +2368,7 @@ export class GameEngine {
         }
         this.triggerStateUpdate();
       } else if ((this.player.hp <= 0 || this.playerCore.hp <= 0) && this.status === 'playing') {
-        this.status = 'defeat';
+        this.beginSlowmo('defeat', this.player.hp <= 0 ? 'KO' : 'CORE DESTROYED');
         // A defeat breaks the live no-continue run (retrying = continue).
         if (this.campaignRun) this.campaignRun = markRunBroken(this.campaignRun);
         soundManager.playDefeat();
@@ -2158,6 +2455,7 @@ export class GameEngine {
             this.comboTimer = 4.0;
             this.comboMax = Math.max(this.comboMax, this.comboCount);
             this.stats.maxCombo = this.comboMax;
+            this.comboCutin(this.comboCount, this.player.archetypeId);
 
             const mult = this.comboMultiplier;
             // v2.2 anti-instant-kill: one direct hit deals at most 35.
@@ -2242,6 +2540,7 @@ export class GameEngine {
             this.comboTimer = 4.0;
             this.comboMax = Math.max(this.comboMax, this.comboCount);
             this.stats.maxCombo = this.comboMax;
+            this.comboCutin(this.comboCount, this.player.archetypeId);
             const mult = this.comboMultiplier;
             // 90s+ core hits deal double damage.
             const coreMult = this.gameTime >= 90 ? 2 : 1;
@@ -2303,6 +2602,7 @@ export class GameEngine {
               this.combo2Count++;
               this.combo2Timer = 4.0;
               this.combo2Max = Math.max(this.combo2Max, this.combo2Count);
+              if (this.combo2Count === 7 && this.player2) this.showCutin(this.player2.archetypeId, 'COMBO x7', 1200);
               if (!this.isOnline) {
                 dmg = Math.round(p.damagePerCell * this.combo2Multiplier);
               }
@@ -2356,6 +2656,7 @@ export class GameEngine {
               this.combo2Count++;
               this.combo2Timer = 4.0;
               this.combo2Max = Math.max(this.combo2Max, this.combo2Count);
+              if (this.combo2Count === 7 && this.player2) this.showCutin(this.player2.archetypeId, 'COMBO x7', 1200);
               if (!this.isOnline) {
                 dmg = Math.round(p.damagePerCell * this.combo2Multiplier);
               }
@@ -2451,6 +2752,8 @@ export class GameEngine {
 
   private render() {
     if (!this.ctx) return;
+    const now = performance.now();
+    const cutin = this.cutin && now < this.cutin.until ? this.cutin : null;
     this.renderer.render(
       this.ctx,
       this.playerBoard,
@@ -2460,7 +2763,9 @@ export class GameEngine {
       this.player2,
       this.projectileMgr,
       this.particleSystem,
-      this.screenShake,
+      // v2.2 Phase 2: the pause-menu shake toggle gates the shake here so
+      // every shake source respects it at once.
+      this.shakeEnabled ? this.screenShake : 0,
       this.gameTime,
       this.playerCore,
       this.enemyCore,
@@ -2468,8 +2773,72 @@ export class GameEngine {
       this.shrinkRect2,
       this.shrinkPhase,
       this.mode === 'royale',
-      this.royaleWarnings
+      this.royaleWarnings,
+      cutin
     );
+
+    // v2.2 Phase 2: start-countdown overlay (3-2-1-FIGHT) above the canvas.
+    if (this.isCountingDown()) {
+      const elapsed = now - (this.countdownEndAt - COUNTDOWN_MS);
+      const label = countdownLabel(elapsed);
+      const ctx = this.ctx;
+      ctx.save();
+      ctx.font = '900 120px "Chakra Petch", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.strokeStyle = 'rgba(3, 6, 12, 0.9)';
+      ctx.lineWidth = 10;
+      ctx.strokeText(label, 960, 540);
+      ctx.fillStyle = label === 'FIGHT!' ? '#FFD166' : '#FFFFFF';
+      ctx.fillText(label, 960, 540);
+      ctx.restore();
+      return;
+    }
+
+    // v2.2 Phase 2: FTUE ghost hints — stage 1, first 5 seconds only,
+    // translucent pills over the player board, fading out at the end.
+    if (this.status === 'playing' && this.mode === 'single' && this.currentStage === 1 && this.gameTime < 5) {
+      const alpha = Math.max(0, Math.min(0.85, ((5 - this.gameTime) / 1.5) * 0.85));
+      if (alpha > 0.01) {
+        const ctx = this.ctx;
+        const ox = this.renderer.playerOriginX;
+        const oy = this.renderer.playerOriginY;
+        const totalW = GRID_COLS * (this.renderer.cellW + this.renderer.gap) - this.renderer.gap;
+        const totalH = GRID_ROWS * (this.renderer.cellH + this.renderer.gap) - this.renderer.gap;
+        const hints: [string, number][] = [
+          ['WASD 이동', ox + totalW * 0.18],
+          ['SPACE 발사', ox + totalW * 0.5],
+          ['X 디스카드', ox + totalW * 0.82],
+        ];
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font = '700 20px "Chakra Petch", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        for (const [text, cx] of hints) {
+          const w = ctx.measureText(text).width + 32;
+          const cy = oy + totalH / 2;
+          const rx = cx - w / 2;
+          const ry = cy - 20;
+          const r = 20;
+          ctx.beginPath();
+          ctx.moveTo(rx + r, ry);
+          ctx.arcTo(rx + w, ry, rx + w, ry + 40, r);
+          ctx.arcTo(rx + w, ry + 40, rx, ry + 40, r);
+          ctx.arcTo(rx, ry + 40, rx, ry, r);
+          ctx.arcTo(rx, ry, rx + w, ry, r);
+          ctx.closePath();
+          ctx.fillStyle = 'rgba(3, 6, 12, 0.72)';
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(0, 255, 170, 0.55)';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillText(text, cx, cy + 1);
+        }
+        ctx.restore();
+      }
+    }
   }
 
   private triggerStateUpdate() {
