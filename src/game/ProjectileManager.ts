@@ -284,13 +284,17 @@ export class ProjectileManager {
 
               // v2.2 counter-overcharge: the surviving cell's projectile
               // accelerates x1.4 once, and its launcher's skill cooldown
-              // drops by 1.0s (via onClashWin).
-              if (pCell.hp > 0 && eCell.hp <= 0 && !this.overcharged.has(pProj.id)) {
+              // drops by 1.0s (via onClashWin). Upper bound: only a
+              // projectile launched with 3+ cells qualifies — a 1-2 cell
+              // snipe winning a clash gets no overcharge. cells.length is
+              // the launch size (cells are never removed, only marked
+              // destroyed).
+              if (pCell.hp > 0 && eCell.hp <= 0 && pProj.cells.length >= 3 && !this.overcharged.has(pProj.id)) {
                 this.overcharged.add(pProj.id);
                 pProj.vy *= 1.4;
                 this.onClashWin?.('player');
               }
-              if (eCell.hp > 0 && pCell.hp <= 0 && !this.overcharged.has(eProj.id)) {
+              if (eCell.hp > 0 && pCell.hp <= 0 && eProj.cells.length >= 3 && !this.overcharged.has(eProj.id)) {
                 this.overcharged.add(eProj.id);
                 eProj.vy *= 1.4;
                 this.onClashWin?.('enemy');

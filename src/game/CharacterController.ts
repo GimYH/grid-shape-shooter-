@@ -80,6 +80,16 @@ export class PlayerCharacter {
     soundManager.playSwitch();
   }
 
+  // v2.2 core collapse: a grab on an outer (1st/9th) column can never
+  // swap — swapTiles refuses locked tiles — so drop it the moment the
+  // columns collapse instead of leaving a stale grab behind.
+  public releaseGrabOnCollapsedColumn() {
+    if (this.grabbedPos && (this.grabbedPos.col === 0 || this.grabbedPos.col === GRID_COLS - 1)) {
+      this.grabbedPos = null;
+      this.grabbedTileColor = null;
+    }
+  }
+
   public performDash(particleSystem: ParticleSystem): boolean {
     if (this.dashCooldownRemaining > 0) return false;
     const maxCD = this.archetypeId === 'speedster' ? 1.0 : 1.6;
@@ -453,7 +463,10 @@ export class PlayerCharacter {
         this.currentRow = Math.max(0, Math.min(GRID_ROWS - 1, Math.floor((this.y - boardOriginY) / rowStep)));
 
         const tile = board.tiles[this.currentRow]?.[this.currentCol];
-        if (tile) {
+        // A locked (collapsed / shrink-wall) landing tile must not turn
+        // yellow and its cooldown must not clear — the blink itself
+        // still moves, only the tile effect is skipped.
+        if (tile && !board.isTileLocked(this.currentCol, this.currentRow)) {
           tile.cooldownRemaining = 0;
           tile.cooldownMax = 0;
           tile.color = 'yellow';

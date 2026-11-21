@@ -73,6 +73,23 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
     }
   }, [initialRoomCode]);
 
+  // A finished royale battle leaves stale lobby state behind: the modal
+  // stays mounted while hidden, so the old room code, player list and
+  // countdown survive "홈으로 돌아가기" (the server already removed the
+  // player and deleted the room on disconnect). Reopening GRID ROYALE
+  // would then show the dead lobby instead of the create/join screen.
+  // When the modal opens without an active room, drop the stale lobby.
+  useEffect(() => {
+    if (isOpen && !networkManager.royaleRoomCode) {
+      setRoyaleRoomCode(null);
+      setRoyaleMyId(null);
+      setRoyalePlayers([]);
+      setCountdown(null);
+      setIsReady(false);
+      setErrorMessage(null);
+    }
+  }, [isOpen]);
+
   useEffect(() => {
     networkManager.onRoomCreated = (code) => {
       setCurrentRoomCode(code);
@@ -157,6 +174,11 @@ export const OnlineRoomModal: React.FC<OnlineRoomModalProps> = ({
     };
 
     networkManager.onRoyaleStart = (players, seed) => {
+      // The countdown banner must not survive into the battle: the modal
+      // stays mounted while hidden, so a stale `countdown` would show a
+      // frozen "3초 후 배틀로얄 시작!" lobby with disabled buttons when
+      // the player reopens GRID ROYALE after the match.
+      setCountdown(null);
       const myId = networkManager.royalePlayerId || royaleMyId || '';
       onStartRoyaleBattle?.(players, myId, seed);
     };

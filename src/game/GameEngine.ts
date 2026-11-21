@@ -116,6 +116,12 @@ export class GameEngine {
   // Fed into player.analogMove every frame; P1 only, like touch controls.
   public joystickVector: { x: number; y: number } | null = null;
   public gameTime: number = 0;
+  // Wall-clock battle start (performance.now ms). BATTLE TIME on the
+  // result screen uses this, not gameTime: gameTime only advances inside
+  // the rAF update loop and is clamped to 0.05s/frame, so it lags real
+  // time badly whenever frames run below 20fps or the tab is throttled
+  // (a live royale round showed 0:05 after ~1 minute of play).
+  private battleStartAt: number = 0;
   public screenShake: number = 0;
   public hitstopTimer: number = 0;
 
@@ -140,7 +146,7 @@ export class GameEngine {
   }
 
   // v2.2 rear cores: one per side. Player core is always 250 HP; the
-  // enemy core is 250, or 350 in the final boss stage.
+  // enemy core is 250, or 400 in the final boss stage.
   public playerCore: CoreState = { hp: 250, maxHp: 250, collapsed: false, crack: 0 };
   public enemyCore: CoreState = { hp: 250, maxHp: 250, collapsed: false, crack: 0 };
 
@@ -284,6 +290,7 @@ export class GameEngine {
 
     if (side === 'player') {
       const c = this.player;
+      c.releaseGrabOnCollapsedColumn();
       if (c.currentCol === 0 || c.currentCol === GRID_COLS - 1) {
         const inner = c.currentCol === 0 ? 1 : GRID_COLS - 2;
         c.currentCol = inner;
@@ -294,6 +301,7 @@ export class GameEngine {
       }
     } else if (this.player2) {
       const c = this.player2;
+      c.releaseGrabOnCollapsedColumn();
       if (c.currentCol === 0 || c.currentCol === GRID_COLS - 1) {
         const inner = c.currentCol === 0 ? 1 : GRID_COLS - 2;
         c.currentCol = inner;
@@ -669,6 +677,7 @@ export class GameEngine {
     this.mode = mode;
     this.status = 'playing';
     this.gameTime = 0;
+    this.battleStartAt = performance.now();
 
     if (mode === 'boss') {
       this.currentStage = 30;
@@ -757,6 +766,7 @@ export class GameEngine {
     this.mode = 'multi';
     this.status = 'playing';
     this.gameTime = 0;
+    this.battleStartAt = performance.now();
     this.networkSyncTimer = 0;
     this.boardSyncTimer = 0;
     this.boardHashStreak = 0;
@@ -847,6 +857,7 @@ export class GameEngine {
     this.mode = 'royale';
     this.status = 'playing';
     this.gameTime = 0;
+    this.battleStartAt = performance.now();
     this.networkSyncTimer = 0;
     this.boardSyncTimer = 0;
     this.boardHashStreak = 0;
@@ -1709,7 +1720,11 @@ export class GameEngine {
 
   private update(dt: number) {
     this.gameTime += dt;
-    this.stats.gameDuration = this.gameTime;
+    // Result-screen BATTLE TIME is wall-clock match time (see
+    // battleStartAt): gameTime is the gameplay clock and must keep
+    // driving shrink/AI timing exactly as before.
+    this.stats.gameDuration =
+      this.battleStartAt > 0 ? (performance.now() - this.battleStartAt) / 1000 : this.gameTime;
 
     // Mid-battle disconnect detection. The server notifies the remaining
     // player via peer_left, but if the lobby modal overwrote the callback
@@ -1754,7 +1769,7 @@ export class GameEngine {
     if (!this.shrinkWarned && this.gameTime >= 80) {
       this.shrinkWarned = true;
       this.shrinkPhase = 'warning';
-      this.particleSystem.addFloatingText(960, 120, '10초 후 수축 중심 고정!', '#FF4444', 22);
+      this.particleSystem.addFloatingText(960, 120, '10초 후 수축 중심 고정! (전방: 화력 유지 / 후방: 회피 유리)', '#FF4444', 22);
       this.triggerStateUpdate();
     }
     if (this.shrinkPhase === 'warning' && this.gameTime >= 90) {

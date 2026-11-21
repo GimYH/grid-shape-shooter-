@@ -161,6 +161,17 @@ export class GridBoard {
       { dc: 0, dr: -1 },
     ];
 
+    // v2.2 late-game anti-stall: when collapse + shrink leave 9 or fewer
+    // usable (unlocked) tiles, a 3-tile cluster is nearly impossible —
+    // relax the minimum launch size to 2 (sniper stays at 1).
+    let activeTiles = 0;
+    for (let r = 0; r < GRID_ROWS; r++) {
+      for (let c = 0; c < GRID_COLS; c++) {
+        if (!this.isTileLocked(c, r)) activeTiles++;
+      }
+    }
+    const minLaunchSize = isSniper ? 1 : activeTiles <= 9 ? 2 : 3;
+
     for (let r = 0; r < GRID_ROWS; r++) {
       for (let c = 0; c < GRID_COLS; c++) {
         // Locked tiles (collapsed columns, shrink wall) are excluded from
@@ -198,7 +209,6 @@ export class GridBoard {
           }
         }
 
-        const minLaunchSize = isSniper ? 1 : 3;
         const isActive = group.length >= minLaunchSize;
         const { shapeType, shapeTitle } = this.detectShapePattern(group);
 

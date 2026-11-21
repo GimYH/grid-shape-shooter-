@@ -871,9 +871,10 @@ export class CanvasRenderer {
       ctx.arc(0, 0, R + 12 + Math.sin(time * 15) * 4, 0, Math.PI * 2);
       ctx.stroke();
     }
-    // Shield aura
+    // Shield aura (Monochrome: white outer ring per spec; other
+    // archetypes keep the blue ring).
     if (player.shield > 0) {
-      ctx.strokeStyle = '#33CCFF';
+      ctx.strokeStyle = player.archetypeId === 'monochrome' ? '#FFFFFF' : '#33CCFF';
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.arc(0, 0, R + 8, 0, Math.PI * 2);
