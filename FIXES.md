@@ -516,3 +516,24 @@ TASK.md Phase 2 중 아직 안 된 항목만 구현했다. Phase 1·3은 이전 
 - 신규 테스트 74/74 통과 (`~/workspace/grid-shape-shooter/phase2-2026-11-21.test.ts`, `npx tsx`로 실행): 카운트다운 상수·라벨 단계 (0/449→3, 450→2, 900→1, 1350→FIGHT!), 슬로우모/버퍼/유예 상수, 스탯 1~5 + 제목 10자 이내, colorHash 45자, 렌더러·사운드·네트워크·서버·App·모달·CSS 존재 검사. GameEngine.ts는 직접 import하지 않았다 (Renderer 경유 portrait .jpg를 tsx가 못 읽음) — 순수 함수는 소스에서 상수를 파싱해 분기를 재실행하는 방식으로 검증했다.
 - 기존 테스트 회귀 없음: 버그 수정 라운드 19/19, 엣지케이스 28/28, 배너 17/17 재통과.
 - 미검증(브라우저 필요): 카운트다운 오버레이·슬로우모 체감·FTUE 힌트·컷인·캐릭터 부착 HP 바·레인 가이드·색각 심볼 실화면, 스킬 준비 차임·거부음·히트스톱 체감, 볼륨 슬라이더·흔들림 토글 동작, coarse 게이트 실기기 동작, 핑 칩·재경기 투표 실전 표시.
+
+## 스테이지 전환 미초기화 + 일시정지 BATTLE TIME 누수 수정 (2026-11-21, 로컬 작업만 · 미배포)
+
+### 원인
+- `advanceToNextStage()`가 `beginBattle()`을 호출하지 않았다. 스테이지 클리어 후 "다음 스테이지"로 가면 (a) 진입 카운트다운(1.5초)이 없고, (b) `battleStartAt`이 초기화되지 않아 BATTLE TIME이 이전 스테이지 시간과 누적되고, (c) `stats`(damageDealt 등)도 초기화되지 않았다. 세 시작 함수(`startGame`/`startOnlineGame`/`startRoyaleGame`)는 모두 `gameTime=0` + `battleStartAt=now` + `beginBattle()` + `stats` 초기화를 하는데, `advanceToNextStage()`만 빠져 있었다.
+- `gameDuration`은 벽시계(`performance.now() - battleStartAt`) 기준인데 `update()`가 일시정지 중에는 안 돌아서, ESC 일시정지 체류 시간이 재개 시점에 그대로 더해졌다.
+
+### 수정 (`src/game/GameEngine.ts`만)
+- `advanceToNextStage()`(1521행): `gameTime=0`, `battleStartAt=performance.now()`, `pauseAccum=0`, `pausedAt=0`, `beginBattle()` 호출 + `stats` 전 필드 초기화(`currentStage`는 증가 후 스테이지로). `comboMax=0`도 추가 — `stats.maxCombo`는 `comboMax`에서 유도돼(`comboMax = max(comboMax, comboCount); stats.maxCombo = comboMax`), `comboMax`를 안 비우면 stats 초기화가 다음 콤보 갱신 때 되돌려진다. 캠페인 런(`campaignRun`)은 건드리지 않는다(런 유지가 설계).
+- 일시정지 제외: `pauseAccum`/`pausedAt` 필드 추가. `togglePause()`가 일시정지 시작 시 `pausedAt`을 찍고, 재개 시 `pauseAccum += now - pausedAt`으로 누적한다. `update()`의 `gameDuration` 계산에서 `pauseAccum`을 뺀다. 세 시작 함수와 `advanceToNextStage()`에서 `pauseAccum=0`으로 초기화한다.
+- 판단 근거(기록 영향 없음): 캠페인 노컨티뉴 클리어 시간은 `campaign.ts:77`의 `tryRecordNoContinue`가 `Date.now() - run.startTime`으로 따로 계산하고 `gameDuration`을 입력으로 받지 않는다. `gameDuration`은 GameOverModal·StageClearModal의 BATTLE TIME 표시용뿐이다. 따라서 일시정지 제외는 표시만 바꾸고 기록 의미는 그대로다. 테스트에서 100초 된 런의 기록이 100초로 나오는 것을 실측 확인했다.
+- 알려진 엣지(범위 밖, 수정 안 함): 카운트다운 1.5초 중 ESC 일시정지를 하면 카운트다운 벽시계(`countdownEndAt`)는 일시정지 중에도 흘러서, 재개 시 카운트다운이 짧아지거나 바로 끝날 수 있다. `togglePause()`가 `countdownEndAt`을 안 미뤄서 생기는 것으로, 카운트다운 경로 자체를 건드리지 말라는 범위라 손대지 않았다. 실해는 거의 없다(일시정지 후 전투가 바로 시작될 뿐).
+
+### 건드리지 않은 것
+- 카운트다운·컷인·데미지 경로 자체, 보스 각성 연출, 배경 이미지, AI 가중치, 80초 배너 HUD 필 문구, 아케이드 3종.
+
+### 검증 (2026-11-21)
+- `npx tsc --noEmit` 통과, `npm run build` 통과.
+- 신규 테스트 32/32 통과 (`~/workspace/grid-shape-shooter/stage-transition-2026-11-21.test.ts`, `npx tsx`로 실행): `advanceToNextStage`의 `beginBattle()` 호출·`status='playing'` 이후 호출 순서·`gameTime`/`battleStartAt`/`pauseAccum` 초기화·`stats` 9필드·`comboMax` 초기화·`campaignRun` 미접촉, 세 시작 함수의 `pauseAccum` 초기화, `togglePause`의 `pausedAt` 기록·누적·해제, `update()`의 `pauseAccum` 차감식, 캠페인 기록 독립성(소스 + 100초 런 실측). 첫 실행에서 `advanceToNextStage` 추출 정규식이 틀려 16건이 실패했는데, 메서드 끝 구분자 오인인 테스트 버그였고 고친 뒤 32/32 통과. 게임 코드는 건드리지 않았다.
+- 기존 테스트 회귀 없음: 버그 수정 라운드 19/19, 엣지케이스 28/28, 배너 17/17, Phase 2 74/74 재통과.
+- 미검증(브라우저 필요): 스테이지 전환 시 카운트다운 실화면, BATTLE TIME 스테이지별 리셋 실화면, 일시정지 후 BATTLE TIME 제외 실화면.
