@@ -8,6 +8,12 @@ import {
 import { ParticleSystem } from './ParticleSystem';
 import { soundManager } from '../audio/soundManager';
 import { COLOR_HEX, GRID_ROWS } from './GridEngine';
+import {
+  LANCER_SPEAR_SPEED_MULT,
+  MONOCHROME_BLUE_CLASH_TAKEN_MULT,
+  SPEAR_SPEED_MULT,
+  WAVE_WALL_CELL_HP_BONUS,
+} from './archetypes';
 
 export class ProjectileManager {
   public projectiles: ShapeProjectile[] = [];
@@ -68,6 +74,11 @@ export class ProjectileManager {
       baseHp += 1;
     }
 
+    // v2.2 balance: Wave horizontal wall (3+ cells) gets +1 cell HP.
+    if (archetypeId === 'wave' && cluster.shapeType === 'wall') {
+      baseHp += WAVE_WALL_CELL_HP_BONUS;
+    }
+
     // Calculate base damage per cell
     let baseDmg = cluster.color === 'red' ? 4 : 3;
     if (archetypeId === 'monochrome' && cluster.color === 'red') {
@@ -89,7 +100,9 @@ export class ProjectileManager {
     else if (cluster.color === 'yellow') speedMult = 1.0;
 
     if (cluster.shapeType === 'spear') {
-      speedMult *= (archetypeId === 'lancer' ? 2.0 : 1.8);
+      // v2.2 balance: lancer spear 2.0 -> 1.45 (still the fastest spear,
+      // but slow enough to react to / intercept in the neutral zone).
+      speedMult *= (archetypeId === 'lancer' ? LANCER_SPEAR_SPEED_MULT : SPEAR_SPEED_MULT);
     }
     if (cluster.shapeType === 'wall' && archetypeId === 'wave') {
       speedMult *= 2.0;
@@ -227,9 +240,9 @@ export class ProjectileManager {
     // v2.2 type advantage in neutral clashes only: blue > red > yellow >
     // blue. The advantaged side deals double clash damage. Direct hits on
     // characters and cores are NOT affected.
-    // Monochrome exception: a red projectile launched by Monochrome ignores
-    // blue's 2x advantage (the exchange stays 1x). The phase-2 awakened
-    // final boss has the same red immunity.
+    // v2.2 balance: Monochrome red no longer fully ignores blue — blue
+    // deals 1.5x clash damage to it (a normal red projectile takes 2x).
+    // The phase-2 awakened final boss shares the same reduced immunity.
     const beats = (a: ShapeProjectile, b: ShapeProjectile): boolean => {
       if (b.color === 'red' && (b.archetypeId === 'monochrome' || b.archetypeId === 'boss-awakened')) return false;
       return (
@@ -237,6 +250,19 @@ export class ProjectileManager {
         (a.color === 'red' && b.color === 'yellow') ||
         (a.color === 'yellow' && b.color === 'blue')
       );
+    };
+
+    // Clash damage multiplier for `attacker` hitting `defender`.
+    const clashMult = (attacker: ShapeProjectile, defender: ShapeProjectile): number => {
+      if (beats(attacker, defender)) return 2;
+      if (
+        attacker.color === 'blue' &&
+        defender.color === 'red' &&
+        (defender.archetypeId === 'monochrome' || defender.archetypeId === 'boss-awakened')
+      ) {
+        return MONOCHROME_BLUE_CLASH_TAKEN_MULT;
+      }
+      return 1;
     };
 
     for (const pProj of playerProjs) {
@@ -266,9 +292,9 @@ export class ProjectileManager {
               const clashY = (Math.max(pTop, eTop) + Math.min(pBottom, eBottom)) / 2;
 
               // Exchange damage (type advantage doubles the advantaged
-              // side's clash damage).
-              const pDamageToTake = beats(eProj, pProj) ? eCell.hp * 2 : eCell.hp;
-              const eDamageToTake = beats(pProj, eProj) ? pCell.hp * 2 : pCell.hp;
+              // side's clash damage; blue vs monochrome red is 1.5x).
+              const pDamageToTake = eCell.hp * clashMult(eProj, pProj);
+              const eDamageToTake = pCell.hp * clashMult(pProj, eProj);
 
               pCell.hp -= pDamageToTake;
               eCell.hp -= eDamageToTake;

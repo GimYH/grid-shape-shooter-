@@ -4,7 +4,7 @@ import { ParticleSystem } from './ParticleSystem';
 import { soundManager } from '../audio/soundManager';
 import { STAGES, aiLevelStats } from './stages';
 import { AiLevel } from '../types/game';
-import { ARCHETYPES } from './archetypes';
+import { ARCHETYPES, SPEEDSTER_FIRE_BUFF_SEC, TRANSPORTER_SWAP_BUFF_SEC } from './archetypes';
 
 // ---------------------------------------------------------------------------
 // v2.3 utility AI: per-archetype weight profiles + smart skill triggers +
@@ -311,8 +311,13 @@ export class AIController {
   // v2.2 Phase 2: diegetic HP bar residual (see PlayerCharacter.displayHp).
   public displayHp: number = 100;
   // Monochrome absorb shield (mirrors the player rule: +10 per absorbed
-  // non-red cluster, cap 40).
+  // non-red cluster, cap MONOCHROME_SHIELD_MAX).
   public shield: number = 0;
+  // v2.2 balance: launch buff windows (seconds remaining, game time) —
+  // same rule as PlayerCharacter: transporter swap / speedster blink arm
+  // the 1.5s fire buff; GameEngine consumes them on the AI's next launch.
+  public swapBuffRemaining: number = 0;
+  public speedBuffRemaining: number = 0;
   public currentCol: number = 4;
   public currentRow: number = 1;
 
@@ -388,6 +393,8 @@ export class AIController {
     this.bossComboTimer = 0;
     this.bossComboAlt = false;
     this.skillCooldowns = {};
+    this.swapBuffRemaining = 0;
+    this.speedBuffRemaining = 0;
     this.bypassAbsorb = false;
     this.coreCrisis = false;
 
@@ -447,6 +454,13 @@ export class AIController {
     this.launchCooldown = Math.max(0, this.launchCooldown - dt);
     for (const k of Object.keys(this.skillCooldowns) as ArchetypeId[]) {
       this.skillCooldowns[k] = Math.max(0, (this.skillCooldowns[k] ?? 0) - dt);
+    }
+    // v2.2 balance: launch buff windows tick down with game time.
+    if (this.swapBuffRemaining > 0) {
+      this.swapBuffRemaining = Math.max(0, this.swapBuffRemaining - dt);
+    }
+    if (this.speedBuffRemaining > 0) {
+      this.speedBuffRemaining = Math.max(0, this.speedBuffRemaining - dt);
     }
 
     const colStep = cellW + gap;
@@ -747,6 +761,9 @@ export class AIController {
         enemyBoard.swapTiles(swap.a.col, swap.a.row, swap.b.col, swap.b.row);
         particleSystem.addFloatingText(this.x, this.y - 30, 'QUANTUM SWAP!', '#B57EDC', 16);
         particleSystem.addShockwave(this.x, this.y, 80, '#B57EDC');
+        // v2.2 balance: swap-link bonus — first launch within 1.5s deals
+        // +15% damage (same rule as the player transporter).
+        this.swapBuffRemaining = TRANSPORTER_SWAP_BUFF_SEC;
         return true;
       }
       case 'speedster': {
@@ -794,6 +811,10 @@ export class AIController {
       tile.cooldownMax = 0;
       tile.color = 'yellow';
     }
+    // v2.2 balance: a blink (speedster skill or boss PHASE BLINK) arms
+    // the 1.5s fire buff — first launch after the blink gets +15% speed
+    // and +15% damage.
+    this.speedBuffRemaining = SPEEDSTER_FIRE_BUFF_SEC;
     particleSystem.addFloatingText(this.x, this.y - 30, 'BLINK CHARGE!', '#FFCC00', 16);
     particleSystem.addShockwave(this.x, this.y, 110, '#FFCC00');
   }

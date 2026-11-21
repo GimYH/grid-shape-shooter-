@@ -1,5 +1,9 @@
 import { ArchetypeId, SkillEffect, TileColor } from '../types/game';
-import { ARCHETYPES } from './archetypes';
+import {
+  ARCHETYPES,
+  SPEEDSTER_FIRE_BUFF_SEC,
+  TRANSPORTER_SWAP_BUFF_SEC,
+} from './archetypes';
 import { GridBoard, GRID_COLS, GRID_ROWS } from './GridEngine';
 import { ParticleSystem } from './ParticleSystem';
 import { soundManager } from '../audio/soundManager';
@@ -20,6 +24,13 @@ export class PlayerCharacter {
 
   public archetypeId: ArchetypeId = 'lancer';
   public skillCooldownRemaining: number = 0;
+  // v2.2 balance: launch buff windows (seconds remaining, game time).
+  // Transporter: +15% damage on the first launch within 1.5s of a swap.
+  // Speedster: +15% speed/damage on the first launch within 1.5s of a
+  // blink or dash. Consumed by GameEngine.handlePlayerLaunch / the AI
+  // launch handler; the renderer draws the buff ring while active.
+  public swapBuffRemaining: number = 0;
+  public speedBuffRemaining: number = 0;
 
   public currentCol: number = 3;
   public currentRow: number = 2;
@@ -78,6 +89,8 @@ export class PlayerCharacter {
     if (this.archetypeId === newArchetype) return;
     this.archetypeId = newArchetype;
     this.skillCooldownRemaining = 0;
+    this.swapBuffRemaining = 0;
+    this.speedBuffRemaining = 0;
     this.grabbedTileColor = null;
     this.grabbedPos = null;
     soundManager.playSwitch();
@@ -100,6 +113,11 @@ export class PlayerCharacter {
     this.dashCooldownRemaining = maxCD;
     this.dashDurationRemaining = 0.16;
     this.isInvincible = true;
+    // v2.2 balance: a speedster dash arms the 1.5s fire buff (first
+    // launch after the dash gets +15% speed and +15% damage).
+    if (this.archetypeId === 'speedster') {
+      this.speedBuffRemaining = SPEEDSTER_FIRE_BUFF_SEC;
+    }
 
     soundManager.playDash();
     particleSystem.addShockwave(this.x, this.y, 75, '#00FFAA');
@@ -154,6 +172,13 @@ export class PlayerCharacter {
     if (this.skillCooldownRemaining > 0) {
       this.skillCooldownRemaining = Math.max(0, this.skillCooldownRemaining - dt);
     }
+    // v2.2 balance: launch buff windows tick down with game time.
+    if (this.swapBuffRemaining > 0) {
+      this.swapBuffRemaining = Math.max(0, this.swapBuffRemaining - dt);
+    }
+    if (this.speedBuffRemaining > 0) {
+      this.speedBuffRemaining = Math.max(0, this.speedBuffRemaining - dt);
+    }
     // v2.2 Phase 2: the red residual bar on the diegetic HP bar eases
     // down toward real HP (45 HP/s); heals snap it up at once.
     if (this.displayHp > this.hp) {
@@ -176,6 +201,13 @@ export class PlayerCharacter {
     }
     if (this.slowTimer > 0) {
       this.slowTimer = Math.max(0, this.slowTimer - dt);
+    }
+    // v2.2 balance: the remote copy's launch buff windows tick the same way.
+    if (this.swapBuffRemaining > 0) {
+      this.swapBuffRemaining = Math.max(0, this.swapBuffRemaining - dt);
+    }
+    if (this.speedBuffRemaining > 0) {
+      this.speedBuffRemaining = Math.max(0, this.speedBuffRemaining - dt);
     }
     // v2.2 discard magazine recharge: 1 stack per 1.2s.
     if (this.discardStacks < 3) {
@@ -338,6 +370,13 @@ export class PlayerCharacter {
     if (this.slowTimer > 0) {
       this.slowTimer = Math.max(0, this.slowTimer - dt);
     }
+    // v2.2 balance: the remote copy's launch buff windows tick the same way.
+    if (this.swapBuffRemaining > 0) {
+      this.swapBuffRemaining = Math.max(0, this.swapBuffRemaining - dt);
+    }
+    if (this.speedBuffRemaining > 0) {
+      this.speedBuffRemaining = Math.max(0, this.speedBuffRemaining - dt);
+    }
     // v2.2 discard magazine recharge (remote peer copy ticks the same way).
     if (this.discardStacks < 3) {
       this.discardRecharge += dt;
@@ -456,6 +495,9 @@ export class PlayerCharacter {
           );
           particleSystem.addFloatingText(this.x, this.y - 30, 'QUANTUM SWAP!', '#B57EDC', 16);
           particleSystem.addShockwave(this.x, this.y, 80, '#B57EDC');
+          // v2.2 balance: swap-link bonus — the first launch within 1.5s
+          // deals +15% damage (purple ring around the character).
+          this.swapBuffRemaining = TRANSPORTER_SWAP_BUFF_SEC;
           this.grabbedPos = null;
           this.grabbedTileColor = null;
           this.skillCooldownRemaining = config.skillCooldown;
@@ -483,6 +525,9 @@ export class PlayerCharacter {
         }
         particleSystem.addFloatingText(this.x, this.y - 30, 'BLINK CHARGE!', '#FFCC00', 16);
         particleSystem.addShockwave(this.x, this.y, 110, '#FFCC00');
+        // v2.2 balance: blink arms the 1.5s fire buff (first launch after
+        // the blink gets +15% speed and +15% damage).
+        this.speedBuffRemaining = SPEEDSTER_FIRE_BUFF_SEC;
         this.skillCooldownRemaining = config.skillCooldown;
         return true;
       }
@@ -537,6 +582,8 @@ export class PlayerCharacter {
     this.displayHp = 100;
     this.shield = 0;
     this.skillCooldownRemaining = 0;
+    this.swapBuffRemaining = 0;
+    this.speedBuffRemaining = 0;
     this.dashCooldownRemaining = 0;
     this.dashDurationRemaining = 0;
     this.isInvincible = false;

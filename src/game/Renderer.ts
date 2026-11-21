@@ -3,10 +3,11 @@ import { PlayerCharacter } from './CharacterController';
 import { AIController } from './AIController';
 import { ProjectileManager } from './ProjectileManager';
 import { ParticleSystem } from './ParticleSystem';
-import { ARCHETYPES, ARCHETYPE_LIST } from './archetypes';
+import { ARCHETYPES, ARCHETYPE_LIST, SPEEDSTER_FIRE_BUFF_SEC, TRANSPORTER_SWAP_BUFF_SEC } from './archetypes';
 import { STAGES, SECTOR_THEMES } from './stages';
 import { ArchetypeId, CoreState, ShrinkPhase, ShrinkRect, TileColor } from '../types/game';
 import { ARCHETYPE_PORTRAITS } from '../assets/portraits';
+import { ArcadeMeteor, ArcadeRenderState, MEGA_ORDER_SEC, weaknessOrderLabel } from './arcade';
 
 // Boss skill cycle colors for the OMNI-OVERLORD core (7 skills: Crimson,
 // Tide, Beam, Chroma, Overdrive, Quantum Rewrite, Phase Blink).
@@ -42,6 +43,34 @@ export class CanvasRenderer {
   // v2.2 Phase 2: preloaded portraits for the cut-in overlay.
   private portraitImages = new Map<ArchetypeId, HTMLImageElement>();
 
+  // Optimization (1.2): cached 32x32 radial-glow sprites, one per color.
+  // Created lazily on first use and reused forever — this replaces the
+  // per-particle ctx.shadowBlur that used to run in renderParticles.
+  // (renderCutin's own shadowBlur is a cut-in effect, not a particle
+  // loop, and is intentionally left alone.)
+  private glowSprites = new Map<string, HTMLCanvasElement | null>();
+
+  private glowSprite(color: string): HTMLCanvasElement | null {
+    if (typeof document === 'undefined') return null;
+    if (this.glowSprites.has(color)) return this.glowSprites.get(color)!;
+    const c = document.createElement('canvas');
+    c.width = 32;
+    c.height = 32;
+    const g = c.getContext('2d');
+    if (!g) {
+      this.glowSprites.set(color, null);
+      return null;
+    }
+    const grad = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+    grad.addColorStop(0, '#FFFFFF');
+    grad.addColorStop(0.35, color);
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 32, 32);
+    this.glowSprites.set(color, c);
+    return c;
+  }
+
   constructor() {
     const totalGridW = GRID_COLS * this.cellW + (GRID_COLS - 1) * this.gap;
     // Center grids horizontally in the 1920 canvas
@@ -76,7 +105,8 @@ export class CanvasRenderer {
     shrinkPhase?: ShrinkPhase,
     isRoyale?: boolean,
     portalWarnings?: { col: number; until: number }[],
-    cutin?: { portrait: ArchetypeId; label: string; until: number; durationMs: number } | null
+    cutin?: { portrait: ArchetypeId; label: string; until: number; durationMs: number } | null,
+    arcade?: ArcadeRenderState | null
   ) {
     ctx.save();
 
@@ -94,8 +124,16 @@ export class CanvasRenderer {
     this.renderNeutralZone(ctx, gameTime);
 
     // 3. Enemy Grid — in royale the top board is a warp portal instead.
+    // Arcade: mega boss / goal line / empty meteor sky take the top area.
     if (isRoyale) {
       this.renderPortal(ctx, gameTime);
+    } else if (arcade) {
+      if (arcade.mode === 'mega') {
+        this.renderMegaBoss(ctx, arcade, gameTime);
+      } else if (arcade.mode === 'rush') {
+        this.renderGoalLine(ctx, gameTime);
+      }
+      // defense: the top area stays empty; meteors fall through it (6a).
     } else {
       const opponentCol = player2 ? player2.currentCol : enemy.currentCol;
       const opponentRow = player2 ? player2.currentRow : enemy.currentRow;
@@ -105,9 +143,11 @@ export class CanvasRenderer {
     // 4. Player Grid
     this.renderGrid(ctx, playerBoard, this.playerOriginX, this.playerOriginY, 'player', player.currentCol, player.currentRow);
 
-    // 4b. Rear cores (behind each board, central 3 columns)
-    if (!isRoyale && enemyCore) this.renderCore(ctx, enemyCore, this.enemyOriginX, this.enemyOriginY - 22, false);
-    if (playerCore) this.renderCore(ctx, playerCore, this.playerOriginX, this.playerOriginY + GRID_ROWS * (this.cellH + this.gap) - this.gap, true);
+    // 4b. Rear cores (behind each board, central 3 columns).
+    // Arcade: no enemy core ever; the player core only exists in defense
+    // (mega/rush have the rear core disabled).
+    if (!isRoyale && !arcade && enemyCore) this.renderCore(ctx, enemyCore, this.enemyOriginX, this.enemyOriginY - 22, false);
+    if (playerCore && (!arcade || arcade.mode === 'defense')) this.renderCore(ctx, playerCore, this.playerOriginX, this.playerOriginY + GRID_ROWS * (this.cellH + this.gap) - this.gap, true);
 
     // 5. Lasers
     this.renderLasers(ctx, particleSystem);
@@ -120,7 +160,15 @@ export class CanvasRenderer {
       this.renderPortalWarnings(ctx, portalWarnings, gameTime);
     }
 
-    // 6b. Shrink walls (over the boards, under the characters)
+    // 6b. Arcade: falling meteors (defense) + mega-boss laser telegraphs.
+    if (arcade?.mode === 'defense' && arcade.meteors.length > 0) {
+      this.renderMeteors(ctx, arcade.meteors, gameTime);
+    }
+    if (arcade?.mode === 'mega' && arcade.laserCols.length > 0) {
+      this.renderLaserTelegraphs(ctx, arcade.laserCols, gameTime);
+    }
+
+    // 6c. Shrink walls (over the boards, under the characters)
     if (shrinkPhase === 'shrinking' || shrinkPhase === 'closed') {
       if (!isRoyale) this.renderShrinkWall(ctx, shrinkRect2 ?? null, this.enemyOriginX, this.enemyOriginY, gameTime);
       this.renderShrinkWall(ctx, shrinkRect ?? null, this.playerOriginX, this.playerOriginY, gameTime);
@@ -129,7 +177,7 @@ export class CanvasRenderer {
     // 7. Characters
     if (player2) {
       this.renderPlayer(ctx, player2, gameTime, enemyBoard, shrinkRect2 ?? null);
-    } else if (!isRoyale) {
+    } else if (!isRoyale && !arcade) {
       this.renderEnemy(ctx, enemy, gameTime, shrinkRect2 ?? null);
     }
     this.renderPlayer(ctx, player, gameTime, playerBoard, shrinkRect ?? null);
@@ -396,6 +444,215 @@ export class CanvasRenderer {
       ctx.lineTo(x, this.enemyOriginY + 18);
       ctx.closePath();
       ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ARCADE — 메가 보스 (상단 적 보드 자리, 9열 전체 너비).
+  // 거대한 코어 + 회전 링 + 배리어/그로기 상태 + 약점 지령 + HP 바.
+  private renderMegaBoss(ctx: CanvasRenderingContext2D, arcade: ArcadeRenderState, time: number) {
+    const x0 = this.enemyOriginX;
+    const y0 = this.enemyOriginY;
+    const w = GRID_COLS * this.cellW + (GRID_COLS - 1) * this.gap;
+    const h = GRID_ROWS * this.cellH + (GRID_ROWS - 1) * this.gap;
+    const cx = x0 + w / 2;
+    const cy = y0 + h / 2;
+    const frac = Math.max(0, arcade.bossHp / arcade.bossMaxHp);
+    const groggy = !arcade.barrier && time < arcade.groggyUntil;
+    ctx.save();
+
+    // Boss HP bar (full width, above the boss zone).
+    const barY = y0 - 22;
+    const barH = 22;
+    ctx.fillStyle = 'rgba(12, 16, 28, 0.95)';
+    ctx.strokeStyle = 'rgba(255, 51, 102, 0.6)';
+    ctx.lineWidth = 2;
+    this.drawRoundedRect(ctx, x0, barY, w, barH, 6);
+    ctx.fill();
+    ctx.stroke();
+    if (frac > 0) {
+      const grad = ctx.createLinearGradient(x0, barY, x0 + w, barY);
+      grad.addColorStop(0, '#FF2244');
+      grad.addColorStop(1, '#FF6688');
+      ctx.fillStyle = grad;
+      this.drawRoundedRect(ctx, x0 + 2, barY + 2, (w - 4) * frac, barH - 4, 4);
+      ctx.fill();
+    }
+    ctx.font = '700 11px "Chakra Petch", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillText(`MEGA BOSS ${Math.round(arcade.bossHp)} / ${arcade.bossMaxHp}`, cx, barY + barH / 2 + 4);
+
+    // Boss body: layered diamond core with a rotating dashed ring.
+    const pulse = 1 + 0.04 * Math.sin(time * 3);
+    const r = 105 * pulse;
+    ctx.translate(cx, cy);
+    ctx.rotate(Math.PI / 4);
+    const bodyGrad = ctx.createRadialGradient(0, 0, 8, 0, 0, r);
+    bodyGrad.addColorStop(0, frac > 0.5 ? '#FF2244' : frac > 0.25 ? '#CC1133' : '#770011');
+    bodyGrad.addColorStop(1, 'rgba(20, 4, 12, 0.95)');
+    ctx.fillStyle = bodyGrad;
+    ctx.strokeStyle = groggy ? '#FFD166' : '#FF3366';
+    ctx.lineWidth = groggy ? 5 : 3;
+    ctx.shadowColor = groggy ? '#FFD166' : '#FF2244';
+    ctx.shadowBlur = groggy ? 42 : 26;
+    ctx.beginPath();
+    ctx.rect(-r / 1.35, -r / 1.35, (r / 1.35) * 2, (r / 1.35) * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.rotate(-Math.PI / 4);
+    // Rotating dashed ring.
+    ctx.strokeStyle = arcade.barrier ? 'rgba(51, 204, 255, 0.85)' : 'rgba(255, 209, 102, 0.9)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([22, 12]);
+    ctx.lineDashOffset = -time * 50;
+    ctx.beginPath();
+    ctx.arc(0, 0, r + 16, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Inner eye.
+    const eye = 26 + 5 * Math.sin(time * 5);
+    ctx.fillStyle = groggy ? '#FFD166' : '#FFFFFF';
+    ctx.beginPath();
+    ctx.arc(0, 0, eye, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#FF2244';
+    ctx.beginPath();
+    ctx.arc(0, 0, eye * 0.45, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Status + weakness order text (centered under the core).
+    ctx.save();
+    ctx.textAlign = 'center';
+    const labelY = cy + 108;
+    if (groggy) {
+      const flash = 0.6 + 0.4 * Math.sin(time * 12);
+      ctx.font = '900 26px "Chakra Petch", monospace';
+      ctx.strokeStyle = 'rgba(3, 6, 12, 0.9)';
+      ctx.lineWidth = 5;
+      ctx.strokeText('GROGGY! ×2.5', cx, labelY);
+      ctx.fillStyle = `rgba(255, 209, 102, ${flash})`;
+      ctx.fillText('GROGGY! ×2.5', cx, labelY);
+    } else if (arcade.order) {
+      ctx.font = '700 15px "Chakra Petch", monospace';
+      ctx.strokeStyle = 'rgba(3, 6, 12, 0.9)';
+      ctx.lineWidth = 4;
+      const orderText = `약점 지령: ${weaknessOrderLabel(arcade.order)}`;
+      ctx.strokeText(orderText, cx, labelY);
+      ctx.fillStyle = '#FFD166';
+      ctx.fillText(orderText, cx, labelY);
+      // 7초 게이지.
+      const remain = Math.max(0, arcade.orderDeadline - time);
+      const gw = 260;
+      const gy = labelY + 10;
+      ctx.fillStyle = 'rgba(12, 16, 28, 0.9)';
+      this.drawRoundedRect(ctx, cx - gw / 2, gy, gw, 8, 4);
+      ctx.fill();
+      ctx.fillStyle = remain > 2 ? '#FFD166' : '#FF4444';
+      this.drawRoundedRect(ctx, cx - gw / 2, gy, gw * (remain / MEGA_ORDER_SEC), 8, 4);
+      ctx.fill();
+      ctx.font = '700 13px "Chakra Petch", monospace';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillText(`${remain.toFixed(1)}초`, cx, gy + 26);
+    }
+    if (arcade.barrier) {
+      ctx.font = '700 13px "Chakra Petch", monospace';
+      ctx.fillStyle = 'rgba(51, 204, 255, 0.9)';
+      ctx.fillText('BARRIER · 받는 피해 20%', cx, y0 + h - 8);
+    }
+    ctx.restore();
+  }
+
+  // ARCADE — 오더 러시 목표 라인 (Y = 80).
+  private renderGoalLine(ctx: CanvasRenderingContext2D, time: number) {
+    const x0 = this.enemyOriginX;
+    const w = GRID_COLS * this.cellW + (GRID_COLS - 1) * this.gap;
+    const y = this.enemyOriginY;
+    const pulse = 0.5 + 0.3 * Math.sin(time * 4);
+    ctx.save();
+    ctx.strokeStyle = `rgba(0, 255, 170, ${pulse})`;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([18, 10]);
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x0 + w, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = '700 15px "Chakra Petch", monospace';
+    ctx.textAlign = 'center';
+    ctx.strokeStyle = 'rgba(3, 6, 12, 0.9)';
+    ctx.lineWidth = 4;
+    ctx.strokeText('GOAL LINE · 목표 라인', 960, y - 12);
+    ctx.fillStyle = 'rgba(0, 255, 170, 0.9)';
+    ctx.fillText('GOAL LINE · 목표 라인', 960, y - 12);
+    ctx.restore();
+  }
+
+  // ARCADE — 코어 디펜스 운석. 셀 단위로 그리며, 반파된 셀은 금이 간다.
+  private renderMeteors(ctx: CanvasRenderingContext2D, meteors: ArcadeMeteor[], time: number) {
+    const stepX = this.cellW + this.gap;
+    const stepY = this.cellH + this.gap;
+    ctx.save();
+    for (const m of meteors) {
+      const hex = COLOR_HEX[m.color];
+      for (const cell of m.cells) {
+        if (cell.destroyed) continue;
+        const x = m.x + cell.relCol * stepX;
+        const y = m.y + cell.relRow * stepY;
+        const damaged = cell.hp < cell.maxHp;
+        ctx.shadowColor = hex;
+        ctx.shadowBlur = 12;
+        ctx.fillStyle = damaged ? '#1A1218' : hex;
+        ctx.globalAlpha = damaged ? 0.85 : 0.95;
+        this.drawRoundedRect(ctx, x + 2, y + 2, this.cellW - 4, this.cellH - 4, 8);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
+        ctx.lineWidth = 2;
+        this.drawRoundedRect(ctx, x + 2, y + 2, this.cellW - 4, this.cellH - 4, 8);
+        ctx.stroke();
+        if (damaged) {
+          ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(x + this.cellW * 0.3, y + 3);
+          ctx.lineTo(x + this.cellW * 0.45, y + this.cellH / 2);
+          ctx.lineTo(x + this.cellW * 0.35, y + this.cellH - 3);
+          ctx.stroke();
+        }
+      }
+      // Meteor label (color + remaining HP) above the block.
+      const alive = m.cells.filter((c) => !c.destroyed).length;
+      ctx.font = '700 12px "Chakra Petch", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.fillText(`${alive}/${m.cells.length}`, m.x + (m.w * stepX) / 2, m.y - 6);
+    }
+    ctx.restore();
+  }
+
+  // ARCADE — 메가 보스 레이저 예고선 (1.2초간 플레이어 보드 열 위에 표시).
+  private renderLaserTelegraphs(ctx: CanvasRenderingContext2D, cols: number[], time: number) {
+    const pulse = 0.3 + 0.25 * Math.sin(time * 16);
+    const step = this.cellW + this.gap;
+    const boardBottom = this.playerOriginY + GRID_ROWS * step - this.gap;
+    ctx.save();
+    for (const col of cols) {
+      const x = this.playerOriginX + col * step;
+      ctx.fillStyle = `rgba(255, 34, 68, ${pulse})`;
+      ctx.fillRect(x, this.playerOriginY, this.cellW, boardBottom - this.playerOriginY);
+      ctx.strokeStyle = `rgba(255, 34, 68, ${Math.min(1, pulse + 0.35)})`;
+      ctx.lineWidth = 3;
+      ctx.setLineDash([10, 8]);
+      ctx.strokeRect(x + 1.5, this.playerOriginY + 1.5, this.cellW - 3, boardBottom - this.playerOriginY - 3);
+      ctx.setLineDash([]);
+      ctx.font = '900 22px "Chakra Petch", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillText('!', x + this.cellW / 2, this.playerOriginY + 30);
     }
     ctx.restore();
   }
@@ -971,6 +1228,10 @@ export class CanvasRenderer {
   // fighter, flips to -32px above on the edge row), 25 HP tick marks, a
   // red residual bar that eases toward real HP, a white shield overlay,
   // discard pips, and a yellow wavy ring while slowed.
+  // v2.2 balance: buffRings draws the launch-buff rings — a dashed purple
+  // ring while the transporter swap-link buff is up, a dashed yellow ring
+  // while the speedster fire buff is up. Each ring fades as its window
+  // (1.5s) runs out; both active (AI hybrid only) draws two rings.
   private renderCharacterHud(
     ctx: CanvasRenderingContext2D,
     x: number,
@@ -984,7 +1245,9 @@ export class CanvasRenderer {
     slowTimer: number,
     time: number,
     flip: boolean,
-    hpColor: string
+    hpColor: string,
+    swapBuffSec: number = 0,
+    speedBuffSec: number = 0
   ) {
     const barW = 48;
     const barH = 6;
@@ -1049,6 +1312,26 @@ export class CanvasRenderer {
       }
       ctx.stroke();
     }
+    // v2.2 balance: launch-buff rings (dashed, fade with the window).
+    const buffRings: { color: string; frac: number }[] = [];
+    if (swapBuffSec > 0) {
+      buffRings.push({ color: '#B57EDC', frac: Math.min(1, swapBuffSec / TRANSPORTER_SWAP_BUFF_SEC) });
+    }
+    if (speedBuffSec > 0) {
+      buffRings.push({ color: '#FFCC00', frac: Math.min(1, speedBuffSec / SPEEDSTER_FIRE_BUFF_SEC) });
+    }
+    buffRings.forEach((ring, i) => {
+      ctx.strokeStyle = ring.color;
+      ctx.globalAlpha = 0.35 + 0.65 * ring.frac;
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([7, 5]);
+      ctx.lineDashOffset = -time * 30;
+      ctx.beginPath();
+      ctx.arc(x, y, radius + 10 + i * 7, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    });
     ctx.restore();
   }
 
@@ -1169,7 +1452,8 @@ export class CanvasRenderer {
       player.hp, player.maxHp, player.displayHp, player.shield,
       player.discardStacks, player.slowTimer, time,
       player.isPlayer2 ? player.currentRow === 0 : player.currentRow === GRID_ROWS - 1,
-      player.isPlayer2 ? '#F87171' : '#34D399'
+      player.isPlayer2 ? '#F87171' : '#34D399',
+      player.swapBuffRemaining, player.speedBuffRemaining
     );
   }
 
@@ -1633,93 +1917,139 @@ export class CanvasRenderer {
       enemy.hp, enemy.maxHp, enemy.displayHp, enemy.shield,
       null, enemy.slowTimer, time,
       enemy.currentRow === 0,
-      '#F87171'
+      '#F87171',
+      enemy.swapBuffRemaining, enemy.speedBuffRemaining
     );
   }
 
+  // Optimization (1.2/1.3): no save()/restore() and no shadowBlur in
+  // the particle passes. The wide faint under-stroke replaces the old
+  // glow; state is reset explicitly at the end of the loop.
   private renderLasers(ctx: CanvasRenderingContext2D, particleSystem: ParticleSystem) {
+    ctx.globalCompositeOperation = 'lighter';
     for (const lb of particleSystem.laserBeams) {
-      ctx.save();
       ctx.strokeStyle = lb.color;
-      ctx.lineWidth = lb.width;
-      ctx.globalAlpha = lb.alpha;
-      ctx.shadowColor = lb.color;
-      ctx.shadowBlur = 24;
-
+      ctx.lineWidth = lb.width * 2.2;
+      ctx.globalAlpha = lb.alpha * 0.3;
       ctx.beginPath();
       ctx.moveTo(lb.x1, lb.y1);
       ctx.lineTo(lb.x2, lb.y2);
+      ctx.stroke();
+
+      ctx.globalAlpha = lb.alpha;
+      ctx.lineWidth = lb.width;
       ctx.stroke();
 
       // White laser core
       ctx.strokeStyle = '#FFFFFF';
       ctx.lineWidth = lb.width * 0.4;
       ctx.stroke();
-
-      ctx.restore();
     }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
   }
 
+  // Optimization (1.3): no save()/restore() per shockwave.
   private renderShockwaves(ctx: CanvasRenderingContext2D, particleSystem: ParticleSystem) {
     for (const sw of particleSystem.shockwaves) {
-      ctx.save();
       ctx.strokeStyle = sw.color;
       ctx.lineWidth = 3;
       ctx.globalAlpha = sw.alpha;
       ctx.beginPath();
       ctx.arc(sw.x, sw.y, sw.radius, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.restore();
     }
+    ctx.globalAlpha = 1;
   }
 
+  // Optimization (1.2/1.3): the particle pass runs in one additive
+  // ('lighter') batch. Circles are cached glow sprites (drawImage),
+  // shards are additive triangles, squares are integer fillRects — no
+  // shadowBlur, no save()/restore() per particle. fillStyle is only
+  // reassigned when the color actually changes. Low quality renders
+  // every particle as a plain square (no glow, no trails).
   private renderParticles(ctx: CanvasRenderingContext2D, particleSystem: ParticleSystem) {
-    for (const p of particleSystem.particles) {
-      ctx.save();
-      ctx.globalAlpha = p.alpha;
-      ctx.fillStyle = p.color;
-      ctx.shadowColor = p.color;
-      ctx.shadowBlur = 8;
-
-      if (p.shape === 'shard') {
-        // Tumbling triangle fragment.
-        const a = p.angle ?? 0;
-        const s = p.size * 0.62;
-        ctx.beginPath();
-        ctx.moveTo(p.x + Math.cos(a) * s, p.y + Math.sin(a) * s);
-        ctx.lineTo(p.x + Math.cos(a + 2.1) * s, p.y + Math.sin(a + 2.1) * s);
-        ctx.lineTo(p.x + Math.cos(a + 4.2) * s, p.y + Math.sin(a + 4.2) * s);
-        ctx.closePath();
-        ctx.fill();
-      } else if (p.shape === 'square') {
-        this.drawRoundedRect(ctx, p.x - p.size / 2, p.y - p.size / 2, p.size, p.size, Math.max(2, p.size * 0.28));
-        ctx.fill();
-      } else {
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size / 2, 0, Math.PI * 2);
-        ctx.fill();
+    const ps = particleSystem;
+    if (ps.particleCount === 0) return;
+    ctx.globalCompositeOperation = 'lighter';
+    let lastColor = '';
+    if (ps.squaresOnly) {
+      for (let i = 0; i < ps.particleCount; i++) {
+        const p = ps.particles[i];
+        if (p.color !== lastColor) {
+          ctx.fillStyle = p.color;
+          lastColor = p.color;
+        }
+        ctx.globalAlpha = p.alpha;
+        const s = p.size | 0;
+        ctx.fillRect((p.x - s / 2) | 0, (p.y - s / 2) | 0, s, s);
       }
-      ctx.restore();
+    } else {
+      for (let i = 0; i < ps.particleCount; i++) {
+        const p = ps.particles[i];
+        ctx.globalAlpha = p.alpha;
+        if (p.shape === 'shard') {
+          // Tumbling triangle fragment.
+          if (p.color !== lastColor) {
+            ctx.fillStyle = p.color;
+            lastColor = p.color;
+          }
+          const a = p.angle ?? 0;
+          const s = p.size * 0.62;
+          ctx.beginPath();
+          ctx.moveTo(p.x + Math.cos(a) * s, p.y + Math.sin(a) * s);
+          ctx.lineTo(p.x + Math.cos(a + 2.1) * s, p.y + Math.sin(a + 2.1) * s);
+          ctx.lineTo(p.x + Math.cos(a + 4.2) * s, p.y + Math.sin(a + 4.2) * s);
+          ctx.closePath();
+          ctx.fill();
+        } else if (p.shape === 'square') {
+          if (p.color !== lastColor) {
+            ctx.fillStyle = p.color;
+            lastColor = p.color;
+          }
+          const s = p.size | 0;
+          ctx.fillRect((p.x - s / 2) | 0, (p.y - s / 2) | 0, s, s);
+        } else {
+          // Circle / default (launch dust, glow dust): cached glow sprite.
+          const sprite = ps.glowEnabled ? this.glowSprite(p.color) : null;
+          if (sprite) {
+            const d = p.size * 2.4;
+            ctx.drawImage(sprite, (p.x - d / 2) | 0, (p.y - d / 2) | 0, d | 0, d | 0);
+          } else {
+            if (p.color !== lastColor) {
+              ctx.fillStyle = p.color;
+              lastColor = p.color;
+            }
+            ctx.beginPath();
+            ctx.arc(p.x | 0, p.y | 0, (p.size / 2) | 0, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
     }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
   }
 
+  // Optimization (1.2/1.3): no save()/restore() per text and no
+  // shadowBlur — the dark outline already keeps text readable over
+  // bright tiles and dark bands alike.
   private renderFloatingTexts(ctx: CanvasRenderingContext2D, particleSystem: ParticleSystem) {
+    if (particleSystem.floatingTexts.length === 0) return;
+    ctx.textAlign = 'center';
     for (const ft of particleSystem.floatingTexts) {
-      ctx.save();
       ctx.globalAlpha = ft.alpha;
       ctx.fillStyle = ft.color;
-      ctx.shadowColor = ft.color;
-      ctx.shadowBlur = 10;
       ctx.font = `700 ${ft.fontSize}px "Chakra Petch", monospace`;
-      ctx.textAlign = 'center';
       // Dark outline (same as the neutral-zone watermark) so text stays
       // readable over bright tiles as well as dark bands.
       ctx.strokeStyle = 'rgba(3, 6, 12, 0.85)';
       ctx.lineWidth = Math.max(3, Math.round(ft.fontSize / 5));
       ctx.strokeText(ft.text, ft.x, ft.y);
       ctx.fillText(ft.text, ft.x, ft.y);
-      ctx.restore();
     }
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'start';
   }
 
   // Deterministic 0..1 hash for per-tile decoration (cracks, rubble) so
