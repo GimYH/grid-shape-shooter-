@@ -143,6 +143,12 @@ export class GameEngine {
   // time badly whenever frames run below 20fps or the tab is throttled
   // (a live royale round showed 0:05 after ~1 minute of play).
   private battleStartAt: number = 0;
+  // BATTLE TIME excludes ESC-pause dwell: pauseAccum is the total paused
+  // time (ms) since battleStartAt; pausedAt marks the current pause start
+  // (0 when not paused). The campaign no-continue record is unaffected —
+  // it uses its own Date.now() run clock (campaign.ts), not gameDuration.
+  private pauseAccum: number = 0;
+  private pausedAt: number = 0;
   public screenShake: number = 0;
   public hitstopTimer: number = 0;
   // v2.2 Phase 2: battle-start countdown end (performance.now ms). While
@@ -819,6 +825,8 @@ export class GameEngine {
     this.status = 'playing';
     this.gameTime = 0;
     this.battleStartAt = performance.now();
+    this.pauseAccum = 0;
+    this.pausedAt = 0;
     this.beginBattle();
 
     if (mode === 'boss') {
@@ -909,6 +917,8 @@ export class GameEngine {
     this.status = 'playing';
     this.gameTime = 0;
     this.battleStartAt = performance.now();
+    this.pauseAccum = 0;
+    this.pausedAt = 0;
     this.beginBattle();
     this.networkSyncTimer = 0;
     this.boardSyncTimer = 0;
@@ -1001,6 +1011,8 @@ export class GameEngine {
     this.status = 'playing';
     this.gameTime = 0;
     this.battleStartAt = performance.now();
+    this.pauseAccum = 0;
+    this.pausedAt = 0;
     this.beginBattle();
     this.networkSyncTimer = 0;
     this.boardSyncTimer = 0;
@@ -1509,12 +1521,35 @@ export class GameEngine {
   public advanceToNextStage() {
     this.currentStage = Math.min(30, this.currentStage + 1);
     this.status = 'playing';
+    // Same battle-start reset as startGame/startOnlineGame/startRoyaleGame:
+    // without it the next stage skipped the 1.5s entry countdown, kept the
+    // previous stage's battleStartAt (BATTLE TIME accumulated across
+    // stages) and kept the previous stage's stats (damageDealt etc.).
+    this.gameTime = 0;
+    this.battleStartAt = performance.now();
+    this.pauseAccum = 0;
+    this.pausedAt = 0;
+    this.beginBattle();
     this.comboCount = 0;
     this.comboTimer = 0;
+    this.comboMax = 0;
     this.combo2Count = 0;
     this.combo2Timer = 0;
     this.combo2Max = 0;
     this.resetCores();
+
+    this.stats = {
+      damageDealt: 0,
+      damageTaken: 0,
+      shapesLaunched: 0,
+      tilesDiscarded: 0,
+      clashesWon: 0,
+      maxClusterSize: 0,
+      maxCombo: 0,
+      gameDuration: 0,
+      currentStage: this.currentStage,
+    };
+
     this.renderer.stageId = this.currentStage;
 
     this.playerBoard.reset();
@@ -1999,9 +2034,11 @@ export class GameEngine {
     this.gameTime += dt;
     // Result-screen BATTLE TIME is wall-clock match time (see
     // battleStartAt): gameTime is the gameplay clock and must keep
-    // driving shrink/AI timing exactly as before.
+    // driving shrink/AI timing exactly as before. ESC-pause dwell is
+    // excluded via pauseAccum; the campaign no-continue record is
+    // unaffected (it uses its own Date.now() run clock in campaign.ts).
     this.stats.gameDuration =
-      this.battleStartAt > 0 ? (performance.now() - this.battleStartAt) / 1000 : this.gameTime;
+      this.battleStartAt > 0 ? (performance.now() - this.battleStartAt - this.pauseAccum) / 1000 : this.gameTime;
 
     // v2.2 Phase 2: retry buffered inputs (100ms window), remember
     // launchable pads for the 60ms launch grace, and chime once when a
@@ -2716,8 +2753,16 @@ export class GameEngine {
     if (this.isOnline) return;
     if (this.status === 'playing') {
       this.status = 'paused';
+      // Mark the pause start so the dwell can be excluded from BATTLE
+      // TIME on resume (update() does not run while paused, so the wall
+      // clock would otherwise count the whole pause as battle time).
+      this.pausedAt = performance.now();
     } else if (this.status === 'paused') {
       this.status = 'playing';
+      if (this.pausedAt > 0) {
+        this.pauseAccum += performance.now() - this.pausedAt;
+        this.pausedAt = 0;
+      }
     }
     this.triggerStateUpdate();
   }
