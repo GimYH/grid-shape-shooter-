@@ -143,7 +143,7 @@ export class CanvasRenderer {
     // 4. Player Grid
     this.renderGrid(ctx, playerBoard, this.playerOriginX, this.playerOriginY, 'player', player.currentCol, player.currentRow);
 
-    // 4b. Rear cores (behind each board, central 3 columns).
+    // 4b. Rear cores (behind each board, central 5 columns).
     // Arcade: no enemy core ever; the player core only exists in defense
     // (mega/rush have the rear core disabled).
     if (!isRoyale && !arcade && enemyCore) this.renderCore(ctx, enemyCore, this.enemyOriginX, this.enemyOriginY - 22, false);
@@ -657,8 +657,9 @@ export class CanvasRenderer {
     ctx.restore();
   }
 
-  // v2.2 rear core: a slim bar behind the board spanning the central 3
-  // columns. Crack lines deepen at 60% and 30% HP.
+  // v2.2 rear core: a slim bar behind the board spanning the central 5
+  // columns (hotfix 2026-11-21: widened from central 3). Crack lines
+  // deepen at 60% and 30% HP.
   private renderCore(
     ctx: CanvasRenderingContext2D,
     core: CoreState,
@@ -667,8 +668,8 @@ export class CanvasRenderer {
     isPlayer: boolean
   ) {
     const step = this.cellW + this.gap;
-    const x = originX + 3 * step;
-    const w = 3 * this.cellW + 2 * this.gap;
+    const x = originX + 2 * step;
+    const w = 5 * this.cellW + 4 * this.gap;
     const h = 22;
     const frac = Math.max(0, core.hp / core.maxHp);
 

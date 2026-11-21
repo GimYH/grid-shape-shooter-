@@ -7,6 +7,13 @@ import { ArchetypeConfig, ArchetypeId } from '../types/game';
 export const LANCER_SPEAR_SPEED_MULT = 1.45;
 export const SPEAR_SPEED_MULT = 1.8; // 스피어 기본 배율 (랜서 외)
 export const MONOCHROME_SHIELD_MAX = 25;
+// Hotfix (2026-11-21): monochrome absorb nerf — +8 shield per absorb,
+// absorbed tiles refill in 1.0s, and shield gain has a 2.0s internal
+// cooldown (absorbing during the cooldown still evaporates the cluster
+// but grants no shield).
+export const MONOCHROME_ABSORB_GAIN = 8;
+export const MONOCHROME_ABSORB_REFILL_SEC = 1.0;
+export const MONOCHROME_ABSORB_COOLDOWN_SEC = 2.0;
 export const MONOCHROME_BLUE_CLASH_TAKEN_MULT = 1.5;
 export const WAVE_WALL_CELL_HP_BONUS = 1;
 export const TRANSPORTER_SWAP_BUFF_SEC = 1.5;
@@ -111,7 +118,7 @@ export const ARCHETYPES: Record<ArchetypeId, ArchetypeConfig> = {
     stats: { firepower: 5, mobility: 2, defense: 3 },
     skillName: '블러드 오버드라이브 (Blood Overdrive)',
     skillCooldown: 4.0,
-    passiveDesc: '오직 적색만 사출(데미지 2배). 청/황색 밟고 사출 시 증발 흡수(실드 +10, 상한 25, 0.5초 빠른 리필). 청색 충돌 피해는 1.5배로 경감',
+    passiveDesc: '오직 적색만 사출(데미지 2배). 청/황색 밟고 사출 시 증발 흡수(실드 +8, 상한 25, 1.0초 리필, 흡수 2.0초 내부 쿨다운). 청색 충돌 피해는 1.5배로 경감',
     skillDesc: '보드의 임의의 타일 3개를 즉시 적색으로 물들이며 다음 타격 1.5배 증폭',
   },
 };

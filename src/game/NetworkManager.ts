@@ -10,7 +10,8 @@ import {
 export interface NetworkAction {
   // board_hash/board_request/board_sync: periodic board reconciliation.
   // core_hit: defender-authoritative rear-core HP (v2.2).
-  // sudden_death_anchor: 90s shrink anchor, exchanged once (v2.2).
+  // (Hotfix 2026-11-21: 'sudden_death_anchor' removed — the shrink zone
+  // is symmetric around the board center now, so no anchor is exchanged.)
   type:
     | 'move'
     | 'dash'
@@ -23,8 +24,7 @@ export interface NetworkAction {
     | 'board_hash'
     | 'board_request'
     | 'board_sync'
-    | 'core_hit'
-    | 'sudden_death_anchor';
+    | 'core_hit';
   data: Record<string, unknown>;
 }
 

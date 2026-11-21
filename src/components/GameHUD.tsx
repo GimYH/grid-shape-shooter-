@@ -119,7 +119,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     engine.shrinkPhase === 'idle'
       ? `수축 ${Math.max(0, Math.ceil(90 - t))}초 후`
       : engine.shrinkPhase === 'warning'
-      ? `수축 중심 고정 ${Math.max(0, Math.ceil(90 - t))}초 전! (전방: 화력 유지 / 후방: 회피 유리)`
+      ? `수축 존 시작 ${Math.max(0, Math.ceil(90 - t))}초 전! (중앙으로 모여라)`
       : engine.shrinkPhase === 'shrinking'
       ? `수축 진행 중 ${Math.floor(t - 90)}초`
       : '수축 완료';
