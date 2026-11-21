@@ -129,8 +129,20 @@ export class GridBoard {
 
   // v2.2 core collapse: lock the outer columns immediately. Tiles already
   // there keep their color but leave every cluster and cannot be used.
+  // Hotfix (2026-11-21): data-level exclusion — the collapsed columns'
+  // tiles are emptied outright (color null, cooldown 0) so no code path
+  // can ever count, launch, or refill them. Locked-column checks in
+  // updateClusters/launch/update remain as a second line of defense.
   public collapseSides() {
     this.collapsed = true;
+    for (let r = 0; r < GRID_ROWS; r++) {
+      for (const c of [0, GRID_COLS - 1]) {
+        const tile = this.tiles[r][c];
+        tile.color = null;
+        tile.cooldownRemaining = 0;
+        tile.cooldownMax = 0;
+      }
+    }
     this.updateClusters(false);
   }
 
@@ -138,6 +150,26 @@ export class GridBoard {
   public setShrinkLocked(col: number, row: number, locked: boolean) {
     if (col < 0 || col >= GRID_COLS || row < 0 || row >= GRID_ROWS) return;
     this.shrinkLocked[row][col] = locked;
+  }
+
+  // Hotfix (2026-11-21): anti-clumping refill — if 2+ orthogonal
+  // neighbours share the rolled color, re-roll once. Deterministic given
+  // the board state, so both online clients draw the same sequence from
+  // the same seeded RNG (update()) or the same Math.random picks
+  // (refillRow(), applied verbatim remotely).
+  private rollRefillColor(col: number, row: number, roll: () => number): TileColor {
+    const first = TILE_COLORS[Math.floor(roll() * TILE_COLORS.length)];
+    let same = 0;
+    for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const nc = col + dc;
+      const nr = row + dr;
+      if (nc < 0 || nc >= GRID_COLS || nr < 0 || nr >= GRID_ROWS) continue;
+      if (this.tiles[nr][nc].color === first) same++;
+    }
+    if (same >= 2) {
+      return TILE_COLORS[Math.floor(roll() * TILE_COLORS.length)];
+    }
+    return first;
   }
 
   public update(dt: number, cooldownSpeedMult: number = 1.0, isSniper: boolean = false): boolean {
@@ -159,8 +191,7 @@ export class GridBoard {
           tile.cooldownRemaining -= dt * cooldownSpeedMult;
           if (tile.cooldownRemaining <= 0) {
             tile.cooldownRemaining = 0;
-            const randIndex = Math.floor(this.nextRandom() * TILE_COLORS.length);
-            tile.color = TILE_COLORS[randIndex];
+            tile.color = this.rollRefillColor(c, r, () => this.nextRandom());
             hasRefilled = true;
           }
         }
@@ -221,7 +252,11 @@ export class GridBoard {
             const nr = current.row + d.dr;
 
             if (nc >= 0 && nc < GRID_COLS && nr >= 0 && nr < GRID_ROWS) {
-              if (!visited[nr][nc]) {
+              // Hotfix: a locked tile (collapsed column / shrink wall)
+              // must never join a cluster, even when the BFS reaches it
+              // before the outer scan marks it visited (e.g. expanding
+              // down from the row above a collapsed column).
+              if (!visited[nr][nc] && !this.isTileLocked(nc, nr)) {
                 const neighbor = this.tiles[nr][nc];
                 if (neighbor.color === color) {
                   visited[nr][nc] = true;
@@ -362,7 +397,7 @@ export class GridBoard {
     const picks: { col: number; row: number; color: TileColor }[] = [];
     for (let c = 0; c < GRID_COLS; c++) {
       if (this.tiles[row][c].cooldownRemaining > 0 && this.isTileActive(c, row)) {
-        const color = TILE_COLORS[Math.floor(Math.random() * TILE_COLORS.length)];
+        const color = this.rollRefillColor(c, row, () => Math.random());
         this.tiles[row][c].cooldownRemaining = 0;
         this.tiles[row][c].color = color;
         picks.push({ col: c, row, color });

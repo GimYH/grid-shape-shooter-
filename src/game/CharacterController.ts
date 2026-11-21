@@ -32,6 +32,11 @@ export class PlayerCharacter {
   public swapBuffRemaining: number = 0;
   public speedBuffRemaining: number = 0;
 
+  // Hotfix (2026-11-21): monochrome absorb internal cooldown (seconds
+  // remaining, game time). While > 0 an absorb still evaporates the
+  // cluster but grants no shield — stops infinite shield farming.
+  public absorbCooldownRemaining: number = 0;
+
   public currentCol: number = 3;
   public currentRow: number = 2;
 
@@ -91,6 +96,7 @@ export class PlayerCharacter {
     this.skillCooldownRemaining = 0;
     this.swapBuffRemaining = 0;
     this.speedBuffRemaining = 0;
+    this.absorbCooldownRemaining = 0;
     this.grabbedTileColor = null;
     this.grabbedPos = null;
     soundManager.playSwitch();
@@ -191,6 +197,9 @@ export class PlayerCharacter {
     }
     if (this.dashDurationRemaining > 0) {
       this.dashDurationRemaining = Math.max(0, this.dashDurationRemaining - dt);
+    }
+    if (this.absorbCooldownRemaining > 0) {
+      this.absorbCooldownRemaining = Math.max(0, this.absorbCooldownRemaining - dt);
     }
     if (this.invincibleTimer > 0) {
       this.invincibleTimer = Math.max(0, this.invincibleTimer - dt);
@@ -360,6 +369,9 @@ export class PlayerCharacter {
     if (this.dashDurationRemaining > 0) {
       this.dashDurationRemaining = Math.max(0, this.dashDurationRemaining - dt);
     }
+    if (this.absorbCooldownRemaining > 0) {
+      this.absorbCooldownRemaining = Math.max(0, this.absorbCooldownRemaining - dt);
+    }
     if (this.invincibleTimer > 0) {
       this.invincibleTimer = Math.max(0, this.invincibleTimer - dt);
     }
@@ -394,6 +406,9 @@ export class PlayerCharacter {
   // exact random outcome the sender rolled. Passed through for wave and
   // monochrome so the remote board changes identically instead of rolling
   // again. Omit it (local play, AI) to roll and record lastSkillEffect.
+  // `blinkDir`: the sender's movement direction for a speedster blink
+  // (online only — local play uses this.moveDir). Without it the remote
+  // copy would blink in its own stale direction.
   public triggerSkill(
     board: GridBoard,
     particleSystem: ParticleSystem,
@@ -403,7 +418,8 @@ export class PlayerCharacter {
     cellH: number,
     gap: number,
     onSniperFire?: () => void,
-    effect?: SkillEffect | null
+    effect?: SkillEffect | null,
+    blinkDirParam?: { x: number; y: number } | null
   ): boolean {
     if (this.skillCooldownRemaining > 0) return false;
     this.lastSkillEffect = null;
@@ -506,12 +522,24 @@ export class PlayerCharacter {
         return false;
       }
       case 'speedster': {
-        // Blink forward toward front line (clamped within board boundaries)
-        const blinkDist = this.isPlayer2 ? 110 : -110;
+        // Hotfix (2026-11-21): blink along the current movement direction
+        // (blinkDir from the skill packet online; otherwise this.moveDir —
+        // updated on every movement input, so it is the last moved
+        // direction when standing still, and the forward direction
+        // initially). The old code always blinked straight up (P1) / down
+        // (P2), ignoring the direction keys.
+        const blinkDir = blinkDirParam ?? this.moveDir;
+        const blinkDist = 110;
         const rowStep = cellH + gap;
+        const colStep = cellW + gap;
+        const range = board.colRange();
+        const minX = boardOriginX + range.min * colStep + this.radius;
+        const maxX = boardOriginX + (range.max + 1) * colStep - gap - this.radius;
         const minY = boardOriginY + this.radius;
         const maxY = boardOriginY + GRID_ROWS * rowStep - gap - this.radius;
-        this.y = Math.max(minY, Math.min(maxY, this.y + blinkDist));
+        this.x = Math.max(minX, Math.min(maxX, this.x + blinkDir.x * blinkDist));
+        this.y = Math.max(minY, Math.min(maxY, this.y + blinkDir.y * blinkDist));
+        this.currentCol = Math.max(0, Math.min(GRID_COLS - 1, Math.floor((this.x - boardOriginX) / colStep)));
         this.currentRow = Math.max(0, Math.min(GRID_ROWS - 1, Math.floor((this.y - boardOriginY) / rowStep)));
 
         const tile = board.tiles[this.currentRow]?.[this.currentCol];
@@ -584,6 +612,7 @@ export class PlayerCharacter {
     this.skillCooldownRemaining = 0;
     this.swapBuffRemaining = 0;
     this.speedBuffRemaining = 0;
+    this.absorbCooldownRemaining = 0;
     this.dashCooldownRemaining = 0;
     this.dashDurationRemaining = 0;
     this.isInvincible = false;

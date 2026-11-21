@@ -53,13 +53,16 @@ export class ProjectileManager {
     // Calculate base durability
     const count = cluster.tiles.length;
     let baseHp = 1;
-    let sizeDmgMult = 1.0;
-
     if (count >= 9) {
       baseHp = 3;
-      sizeDmgMult = 2.0;
     } else if (count >= 6) {
       baseHp = 2;
+    }
+
+    // Hotfix (2026-11-21): cluster damage scaling caps at 8 cells — a
+    // 16-cell meteor scales like an 8-cell one (1.5x), never 2.0x.
+    let sizeDmgMult = 1.0;
+    if (Math.min(count, 8) >= 6) {
       sizeDmgMult = 1.5;
     }
 
@@ -139,6 +142,7 @@ export class ProjectileManager {
       glowColor: COLOR_HEX[cluster.color],
       trailTimer: 0,
       frontline,
+      comboAwarded: false,
     };
 
     this.projectiles.push(proj);
@@ -178,6 +182,7 @@ export class ProjectileManager {
       trailTimer: 0,
       frontline: false,
       isBeam: true,
+      comboAwarded: false,
     };
 
     this.projectiles.push(proj);

@@ -63,8 +63,9 @@ function profileFactors(id: ArchetypeId, cluster: Cluster, ctx: ScoreCtx): Recor
       if (cluster.color === 'red') f.red = 1.5;
       break;
     case 'wave':
-      // Central 3 columns (0-based 3-5) = core defense.
-      if ([...cols].some((c) => c >= 3 && c <= 5)) f.center = 3.0;
+      // Central 5 columns (0-based 2-6) = core defense (hotfix 2026-11-21:
+      // rear-core hit zone widened from central 3 to central 5 columns).
+      if ([...cols].some((c) => c >= 2 && c <= 6)) f.center = 3.0;
       if (cluster.shapeType === 'wall') f.wall = 2.5;
       if (cluster.color === 'blue') f.blue = 2.0;
       break;
@@ -94,7 +95,7 @@ function profileFactors(id: ArchetypeId, cluster: Cluster, ctx: ScoreCtx): Recor
       break;
     case 'monochrome':
       if (cluster.color === 'red') f.redCluster = 3.5;
-      // Low shield: a non-red cluster is worth absorbing (+10 shield).
+      // Low shield: a non-red cluster is worth absorbing (+8 shield).
       if (ctx.shield < 20 && cluster.color !== 'red') f.absorb = 2.5;
       break;
   }
@@ -228,9 +229,9 @@ export function checkSkillTrigger(id: ArchetypeId, ctx: SkillTriggerCtx): boolea
     }
     case 'sniper': {
       // Aligned with the player in the same column, or the player is in
-      // the open central 3 columns (0-based 3-5) where the beam can reach
+      // the open central 5 columns (0-based 2-6) where the beam can reach
       // the core lane.
-      return ctx.playerCol === ctx.aiCol || (ctx.playerCol >= 3 && ctx.playerCol <= 5);
+      return ctx.playerCol === ctx.aiCol || (ctx.playerCol >= 2 && ctx.playerCol <= 6);
     }
     case 'painter': {
       // Painting the foot cross to the dominant color would complete a
@@ -310,9 +311,12 @@ export class AIController {
   public maxHp: number = 100;
   // v2.2 Phase 2: diegetic HP bar residual (see PlayerCharacter.displayHp).
   public displayHp: number = 100;
-  // Monochrome absorb shield (mirrors the player rule: +10 per absorbed
-  // non-red cluster, cap MONOCHROME_SHIELD_MAX).
+  // Monochrome absorb shield (mirrors the player rule: +8 per absorbed
+  // non-red cluster, cap MONOCHROME_SHIELD_MAX, 2.0s internal cooldown).
   public shield: number = 0;
+  // Hotfix (2026-11-21): monochrome absorb internal cooldown (seconds
+  // remaining, game time). While > 0 an absorb grants no shield.
+  public absorbCooldownRemaining: number = 0;
   // v2.2 balance: launch buff windows (seconds remaining, game time) —
   // same rule as PlayerCharacter: transporter swap / speedster blink arm
   // the 1.5s fire buff; GameEngine consumes them on the AI's next launch.
@@ -385,6 +389,7 @@ export class AIController {
     this.hp = cfg.hp;
     this.displayHp = cfg.hp;
     this.shield = 0;
+    this.absorbCooldownRemaining = 0;
     this.overdriveActive = false;
     this.awakened = false;
     this.bossCoreHp = cfg.coreHp;
@@ -462,6 +467,10 @@ export class AIController {
     if (this.speedBuffRemaining > 0) {
       this.speedBuffRemaining = Math.max(0, this.speedBuffRemaining - dt);
     }
+    // Hotfix (2026-11-21): monochrome absorb internal cooldown.
+    if (this.absorbCooldownRemaining > 0) {
+      this.absorbCooldownRemaining = Math.max(0, this.absorbCooldownRemaining - dt);
+    }
 
     const colStep = cellW + gap;
     const rowStep = cellH + gap;
@@ -510,8 +519,8 @@ export class AIController {
 
       // Threat assessment: incoming player projectiles.
       const threatenedCols = new Set<number>();
-      // Core defense: a 6+ cell projectile entering the central 3 columns
-      // (0-based 3-5). Set to the column it threatens.
+      // Core defense: a 6+ cell projectile entering the central 5 columns
+      // (0-based 2-6). Set to the column it threatens.
       let defendCol: number | null = null;
       const threatY = boardOriginY + GRID_ROWS * rowStep + 86;
       for (const p of incomingProjectiles) {
@@ -523,7 +532,7 @@ export class AIController {
             const c = Math.floor((cellWorldX - boardOriginX + cellW / 2) / colStep);
             if (c >= 0 && c < GRID_COLS) {
               threatenedCols.add(c);
-              if (isBig && c >= 3 && c <= 5 && defendCol === null) {
+              if (isBig && c >= 2 && c <= 6 && defendCol === null) {
                 defendCol = c;
               }
             }
@@ -544,7 +553,8 @@ export class AIController {
       let decided = false;
 
       // Priority 1 — 80-90s shrink warning: head for the center area so
-      // the AI is not isolated in a corner when the zone anchors.
+      // the AI is not isolated in a corner when the symmetric zone closes
+      // in (center cols 4-6, rows 2-4, 1-indexed).
       if (
         this.moveToCenter &&
         (this.currentCol < 3 || this.currentCol > 5 || this.currentRow < 1 || this.currentRow > 2)

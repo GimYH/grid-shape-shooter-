@@ -7,7 +7,7 @@ import { FrameDefense } from './frameDefense';
 import { CanvasRenderer } from './Renderer';
 import { soundManager } from '../audio/soundManager';
 import { ArchetypeId, Cluster, CoreState, DefeatCause, GameMode, GameStats, ShapeProjectile, ShrinkPhase, ShrinkRect, SkillEffect } from '../types/game';
-import { ARCHETYPES, MONOCHROME_SHIELD_MAX, SPEEDSTER_FIRE_DMG_MULT, SPEEDSTER_FIRE_SPEED_MULT, TRANSPORTER_SWAP_DMG_MULT } from './archetypes';
+import { ARCHETYPES, MONOCHROME_ABSORB_COOLDOWN_SEC, MONOCHROME_ABSORB_GAIN, MONOCHROME_ABSORB_REFILL_SEC, MONOCHROME_SHIELD_MAX, SPEEDSTER_FIRE_DMG_MULT, SPEEDSTER_FIRE_SPEED_MULT, TRANSPORTER_SWAP_DMG_MULT } from './archetypes';
 import { STAGES } from './stages';
 import {
   startCampaignRun,
@@ -112,9 +112,18 @@ export function countdownLabel(elapsedMs: number): '3' | '2' | '1' | 'FIGHT!' {
 // 35 damage. (Core hits are not capped.)
 export const MAX_SINGLE_HIT_DMG = 35;
 
+// Hotfix (2026-11-21): no single rear-core hit deals more than 60
+// damage (per cell impact, meteor AOE included) — a 16-cell meteor must
+// not two-shot a 250 HP core.
+export const MAX_CORE_HIT_DMG = 60;
+
 // v2.2 shrink anchor clamp: the 90s safe-zone center is clamped into the
 // inner area (columns 3-7, rows 2-4, 1-indexed) so it never overlaps the
 // core-collapse columns (1 and 9). Exported for headless verification.
+// Hotfix (2026-11-21): the shrink zone is symmetric around the board
+// center now, so the engine no longer calls this for anchors — it is
+// retained for verification and for any caller that still needs a
+// clamped in-board point.
 export function clampShrinkAnchor(
   x: number,
   y: number,
@@ -319,16 +328,18 @@ export class GameEngine {
   public playerCore: CoreState = { hp: 250, maxHp: 250, collapsed: false, crack: 0 };
   public enemyCore: CoreState = { hp: 250, maxHp: 250, collapsed: false, crack: 0 };
 
-  // v2.2 90-second shrink zone. Anchors are each side's character position
-  // at 90s; rects are the current safe zones in canvas coordinates.
+  // v2.2 90-second shrink zone. Hotfix (2026-11-21): the zone is
+  // symmetric around each board's center (cols 4-6, rows 2-4, 1-indexed)
+  // — no character-position anchors, no anchor exchange. Both sides
+  // compute the same center from the board geometry, so online stays in
+  // sync without a packet. Rects are the current safe zones in canvas
+  // coordinates.
   public shrinkPhase: ShrinkPhase = 'idle';
   public shrinkAnchor: { x: number; y: number } | null = null;
   public shrinkAnchor2: { x: number; y: number } | null = null;
   public shrinkRect: ShrinkRect | null = null;
   public shrinkRect2: ShrinkRect | null = null;
-  public shrinkSent: boolean = false;
   private shrinkWarned: boolean = false;
-  private pendingRemoteAnchor: { normX: number; normY: number } | null = null;
   private shrinkDmgAcc: number = 0;
   private shrinkDmgAcc2: number = 0;
   private refillSoundTimer: number = 0;
@@ -505,9 +516,7 @@ export class GameEngine {
     this.shrinkAnchor2 = null;
     this.shrinkRect = null;
     this.shrinkRect2 = null;
-    this.shrinkSent = false;
     this.shrinkWarned = false;
-    this.pendingRemoteAnchor = null;
     this.shrinkDmgAcc = 0;
     this.shrinkDmgAcc2 = 0;
   }
@@ -605,20 +614,18 @@ export class GameEngine {
     };
   }
 
-  // Map a normalized anchor from the peer's bottom board onto my top board.
-  private mirrorAnchor(normX: number, normY: number): { x: number; y: number } {
-    const totalW = GRID_COLS * this.renderer.cellW + (GRID_COLS - 1) * this.renderer.gap;
-    const totalH = GRID_ROWS * this.renderer.cellH + (GRID_ROWS - 1) * this.renderer.gap;
+  // Hotfix (2026-11-21): the shrink zone is symmetric — its center is
+  // the center of the board's middle 3x3 area (0-based col 4, row 2;
+  // 1-indexed cols 4-6, rows 2-4). Both sides compute it from geometry
+  // alone, so online needs no anchor exchange and both clients see the
+  // same zone.
+  private boardCenterAnchor(originX: number, originY: number): { x: number; y: number } {
+    const stepX = this.renderer.cellW + this.renderer.gap;
+    const stepY = this.renderer.cellH + this.renderer.gap;
     return {
-      x: this.renderer.enemyOriginX + normX * totalW,
-      y: this.renderer.enemyOriginY + (1 - normY) * totalH,
+      x: originX + 4 * stepX + this.renderer.cellW / 2,
+      y: originY + 2 * stepY + this.renderer.cellH / 2,
     };
-  }
-
-  // Clamp an anchor into the inner safe area (cols 3-7, rows 2-4) using
-  // this renderer's geometry.
-  private clampAnchor(x: number, y: number, originX: number, originY: number): { x: number; y: number } {
-    return clampShrinkAnchor(x, y, originX, originY, this.renderer.cellW, this.renderer.cellH, this.renderer.gap);
   }
 
   // GRID ROYALE (v2.4): clear all royale state so a duel / single battle
@@ -643,33 +650,19 @@ export class GameEngine {
 
   private startShrink() {
     this.shrinkPhase = 'shrinking';
-    // Anchors are clamped into the inner safe area (cols 3-7, rows 2-4)
-    // so the safe zone never sits on a collapsed outer column.
-    this.shrinkAnchor = this.clampAnchor(this.player.x, this.player.y, this.renderer.playerOriginX, this.renderer.playerOriginY);
+    // Hotfix (2026-11-21): symmetric shrink — both anchors are the board
+    // centers. No character-position anchor, no 'sudden_death_anchor'
+    // exchange: the zone is identical on both clients by construction.
+    this.shrinkAnchor = this.boardCenterAnchor(this.renderer.playerOriginX, this.renderer.playerOriginY);
     if (this.mode === 'royale') {
       // Royale has no opponent board: only my own board shrinks.
       this.shrinkAnchor2 = null;
       this.shrinkRect2 = null;
-    } else if (this.pendingRemoteAnchor) {
-      const mirrored = this.mirrorAnchor(this.pendingRemoteAnchor.normX, this.pendingRemoteAnchor.normY);
-      this.shrinkAnchor2 = this.clampAnchor(mirrored.x, mirrored.y, this.renderer.enemyOriginX, this.renderer.enemyOriginY);
-      this.pendingRemoteAnchor = null;
     } else {
-      const opp = this.player2 ?? this.enemy;
-      this.shrinkAnchor2 = this.clampAnchor(opp.x, opp.y, this.renderer.enemyOriginX, this.renderer.enemyOriginY);
+      this.shrinkAnchor2 = this.boardCenterAnchor(this.renderer.enemyOriginX, this.renderer.enemyOriginY);
     }
     this.shrinkRect = this.boardRect(this.renderer.playerOriginX, this.renderer.playerOriginY, this.playerBoard);
     this.shrinkRect2 = this.mode === 'royale' ? null : this.boardRect(this.renderer.enemyOriginX, this.renderer.enemyOriginY, this.enemyBoard);
-    if (this.isOnline && this.mode !== 'royale' && !this.shrinkSent) {
-      this.shrinkSent = true;
-      const totalW = GRID_COLS * this.renderer.cellW + (GRID_COLS - 1) * this.renderer.gap;
-      const totalH = GRID_ROWS * this.renderer.cellH + (GRID_ROWS - 1) * this.renderer.gap;
-      // The exchanged anchor is the CLAMPED one.
-      networkManager.sendAction('sudden_death_anchor', {
-        normX: Math.max(0, Math.min(1, (this.shrinkAnchor.x - this.renderer.playerOriginX) / totalW)),
-        normY: Math.max(0, Math.min(1, (this.shrinkAnchor.y - this.renderer.playerOriginY) / totalH)),
-      });
-    }
     this.particleSystem.addFloatingText(960, 500, '수축 존 시작!', '#FF4444', 24);
     soundManager.playBossWarning();
     this.triggerStateUpdate();
@@ -1633,12 +1626,17 @@ export class GameEngine {
             row: GRID_ROWS - 1 - t.row,
           })),
         };
-        this.enemyBoard.launchCluster(mapped, 0.5);
-        this.player2.shield = Math.min(
-          MONOCHROME_SHIELD_MAX,
-          this.player2.shield + (typeof d.shieldGain === 'number' ? d.shieldGain : 10)
+        this.enemyBoard.launchCluster(mapped, MONOCHROME_ABSORB_REFILL_SEC);
+        const gain =
+          typeof d.shieldGain === 'number' ? d.shieldGain : MONOCHROME_ABSORB_GAIN;
+        this.player2.shield = Math.min(MONOCHROME_SHIELD_MAX, this.player2.shield + gain);
+        this.particleSystem.addFloatingText(
+          this.player2.x,
+          this.player2.y - 30,
+          gain > 0 ? `+${gain} SHIELD ABSORBED!` : 'ABSORB COOLDOWN',
+          '#33CCFF',
+          16
         );
-        this.particleSystem.addFloatingText(this.player2.x, this.player2.y - 30, '+10 SHIELD ABSORBED!', '#33CCFF', 16);
         break;
       }
       case 'skill': {
@@ -1647,6 +1645,7 @@ export class GameEngine {
           col: number;
           row: number;
           effect?: SkillEffect;
+          dir?: { x: number; y: number };
         };
         if (typeof d.col === 'number') this.player2.currentCol = d.col;
         if (typeof d.row === 'number') this.player2.currentRow = GRID_ROWS - 1 - d.row;
@@ -1700,7 +1699,10 @@ export class GameEngine {
             );
             soundManager.playLaunch('yellow', 1, 'spear');
           },
-          effect
+          effect,
+          // Hotfix (2026-11-21): blink direction from the sender's packet
+          // (speedster); the local copy's moveDir is stale for the peer.
+          d.dir ?? null
         );
         break;
       }
@@ -1730,19 +1732,6 @@ export class GameEngine {
         soundManager.playHit(true, 0);
         this.particleSystem.addFloatingText(this.player2.x, this.player2.y - 50, `CORE -${d.dmg}!`, '#FF0055', 20);
         this.triggerStateUpdate();
-        break;
-      }
-      case 'sudden_death_anchor': {
-        // The peer reached 90s and sends its anchor (normalized to its own
-        // bottom board). Mirror it onto my top board. If my shrink has not
-        // started yet, hold it until it does.
-        const d = action.data as { normX: number; normY: number };
-        if (typeof d.normX !== 'number' || typeof d.normY !== 'number') break;
-        if (this.shrinkPhase === 'shrinking' || this.shrinkPhase === 'closed') {
-          this.shrinkAnchor2 = this.mirrorAnchor(d.normX, d.normY);
-        } else {
-          this.pendingRemoteAnchor = { normX: d.normX, normY: d.normY };
-        }
         break;
       }
       case 'board_hash': {
@@ -1955,17 +1944,31 @@ export class GameEngine {
     }
 
     // Monochrome special rule
+    // Hotfix (2026-11-21): absorbed tiles refill in 1.0s (was 0.5s), and
+    // shield gain has a 2.0s internal cooldown — absorbing during the
+    // cooldown still evaporates the cluster but grants no shield.
     if (actor.archetypeId === 'monochrome' && cluster.color !== 'red') {
+      const shieldGain =
+        actor.absorbCooldownRemaining <= 0 ? MONOCHROME_ABSORB_GAIN : 0;
+      if (shieldGain > 0) {
+        actor.absorbCooldownRemaining = MONOCHROME_ABSORB_COOLDOWN_SEC;
+      }
       if (this.isOnline && broadcast && playerNum === 1) {
         networkManager.sendAction('absorb', {
           tiles: cluster.tiles.map((t) => ({ col: t.col, row: t.row })),
-          shieldGain: 10,
+          shieldGain,
         });
       }
-      board.launchCluster(cluster, 0.5);
-      actor.shield = Math.min(MONOCHROME_SHIELD_MAX, actor.shield + 10);
+      board.launchCluster(cluster, MONOCHROME_ABSORB_REFILL_SEC);
+      actor.shield = Math.min(MONOCHROME_SHIELD_MAX, actor.shield + shieldGain);
       soundManager.playSkill('monochrome');
-      this.particleSystem.addFloatingText(actor.x, actor.y - 30, '+10 SHIELD ABSORBED!', '#33CCFF', 16);
+      this.particleSystem.addFloatingText(
+        actor.x,
+        actor.y - 30,
+        shieldGain > 0 ? `+${shieldGain} SHIELD ABSORBED!` : 'ABSORB COOLDOWN',
+        '#33CCFF',
+        16
+      );
       this.particleSystem.addShockwave(actor.x, actor.y, 70, '#33CCFF');
       this.triggerStateUpdate();
       return true;
@@ -2169,6 +2172,12 @@ export class GameEngine {
         // Explicit random outcome for wave/monochrome; the remote side
         // applies these exact tiles instead of rolling its own.
         effect: actor.lastSkillEffect ?? undefined,
+        // Hotfix (2026-11-21): the peer's copy of this character has a
+        // stale moveDir, so the blink direction travels with the packet
+        // (speedster only — the only skill that uses it).
+        ...(actor.archetypeId === 'speedster'
+          ? { dir: { x: actor.moveDir.x, y: actor.moveDir.y } }
+          : {}),
       });
     }
 
@@ -2242,10 +2251,23 @@ export class GameEngine {
     // instead of launching (mirrors the player rule), unless this launch
     // is a wave core-defense counter.
     if (aiArchs.includes('monochrome') && cluster.color !== 'red' && !bypass) {
-      this.enemyBoard.launchCluster(cluster, 0.5);
-      this.enemy.shield = Math.min(MONOCHROME_SHIELD_MAX, this.enemy.shield + 10);
+      // Hotfix (2026-11-21): same absorb nerf as the player — 1.0s refill,
+      // +8 shield, 2.0s internal cooldown on the gain.
+      const shieldGain =
+        this.enemy.absorbCooldownRemaining <= 0 ? MONOCHROME_ABSORB_GAIN : 0;
+      if (shieldGain > 0) {
+        this.enemy.absorbCooldownRemaining = MONOCHROME_ABSORB_COOLDOWN_SEC;
+      }
+      this.enemyBoard.launchCluster(cluster, MONOCHROME_ABSORB_REFILL_SEC);
+      this.enemy.shield = Math.min(MONOCHROME_SHIELD_MAX, this.enemy.shield + shieldGain);
       soundManager.playSkill('monochrome');
-      this.particleSystem.addFloatingText(this.enemy.x, this.enemy.y - 30, '+10 SHIELD ABSORBED!', '#33CCFF', 16);
+      this.particleSystem.addFloatingText(
+        this.enemy.x,
+        this.enemy.y - 30,
+        shieldGain > 0 ? `+${shieldGain} SHIELD ABSORBED!` : 'ABSORB COOLDOWN',
+        '#33CCFF',
+        16
+      );
       this.particleSystem.addShockwave(this.enemy.x, this.enemy.y, 70, '#33CCFF');
       this.triggerStateUpdate();
       return;
@@ -2331,6 +2353,18 @@ export class GameEngine {
           // Frozen: no update, no input.
         } else if (this.hitstopTimer > 0) {
           this.hitstopTimer -= dt;
+          // Hotfix (2026-11-21): a dash pressed during hitstop must not
+          // be swallowed. The input buffer window is wall-clock, but
+          // update() (and flushInputBuffers) does not run while the game
+          // is frozen — so a chained hitstop could expire a buffered
+          // dash before it is ever retried. Freeze the window with the
+          // game: extend each buffered input by the wall time spent
+          // frozen. The in-progress dash itself is already safe — its
+          // duration only ticks inside update(), which is skipped here.
+          for (const pn of [1, 2] as const) {
+            const buf = this.inputBuffer[pn];
+            if (buf) buf.until += rawDt * 1000;
+          }
         } else {
           this.update(dt);
         }
@@ -2433,7 +2467,7 @@ export class GameEngine {
       // never covers either board. It rises ~31px over its 0.9s life
       // (35px/s), ending at ~468 — clear of the watermark (baseline 525)
       // and both boards (enemy bottom 384, player top 656).
-      this.particleSystem.addFloatingText(960, 500, '10초 후 수축 중심 고정! (전방: 화력 유지 / 후방: 회피 유리)', '#FF4444', 22);
+      this.particleSystem.addFloatingText(960, 500, '10초 후 수축 존 시작! (중앙으로 모여라!)', '#FF4444', 22);
       this.triggerStateUpdate();
     }
     if (!this.isArcade && this.shrinkPhase === 'warning' && this.gameTime >= 90) {
@@ -2964,11 +2998,17 @@ export class GameEngine {
             cells: p.cells.length,
             frontline: !!p.frontline,
           });
-        this.comboCount++;
-        this.comboTimer = 4.0;
-        this.comboMax = Math.max(this.comboMax, this.comboCount);
-        this.stats.maxCombo = this.comboMax;
-        this.comboCutin(this.comboCount, this.player.archetypeId);
+        // Hotfix (2026-11-21): one projectile awards at most +1 combo,
+        // however many of its cells connect (the damage multiplier below
+        // still uses the current combo — only the increment is gated).
+        if (!p.comboAwarded) {
+          p.comboAwarded = true;
+          this.comboCount++;
+          this.comboTimer = 4.0;
+          this.comboMax = Math.max(this.comboMax, this.comboCount);
+          this.stats.maxCombo = this.comboMax;
+          this.comboCutin(this.comboCount, this.player.archetypeId);
+        }
         const mult = this.comboMultiplier;
         const dmgMult = this.megaBarrier ? MEGA_BARRIER_MULT : MEGA_GROGGY_MULT;
         const finalDmg = Math.max(1, Math.round(p.damagePerCell * mult * dmgMult));
@@ -3307,7 +3347,10 @@ export class GameEngine {
             // Consecutive hit combo scaling (v2.2 balance: a sniper 1-2
             // cell snipe does not raise the combo or refresh its timer —
             // the hit still deals damage at the current multiplier).
-            if (countsForCombo(p.archetypeId, p.cells.length, p.isBeam)) {
+            // Hotfix (2026-11-21): one projectile awards at most +1
+            // combo, however many of its cells connect.
+            if (countsForCombo(p.archetypeId, p.cells.length, p.isBeam) && !p.comboAwarded) {
+              p.comboAwarded = true;
               this.comboCount++;
               this.comboTimer = 4.0;
               this.comboMax = Math.max(this.comboMax, this.comboCount);
@@ -3383,8 +3426,8 @@ export class GameEngine {
           }
         }
 
-        // 1b. Rear core hit: a cell that passed through the central 3
-        // columns (4-6) and behind the enemy board strikes the core.
+        // 1b. Rear core hit: a cell that passed through the central 5
+        // columns (3-7) and behind the enemy board strikes the core.
         // Combo and frontline bonuses apply; red/yellow status effects do not.
         for (const cell of p.cells) {
           if (cell.destroyed) continue;
@@ -3393,10 +3436,13 @@ export class GameEngine {
           const cellCenterX = cellLeft + cellW / 2;
           const cellCenterY = cellTop + cellH / 2;
           const col = Math.floor((cellCenterX - this.renderer.enemyOriginX) / (cellW + gap));
-          if (cellCenterY < this.renderer.enemyOriginY && col >= 3 && col <= 5) {
+          if (cellCenterY < this.renderer.enemyOriginY && col >= 2 && col <= 6) {
             // v2.2 balance: a sniper 1-2 cell snipe does not raise the
             // combo or refresh its timer (damage still applies).
-            if (countsForCombo(p.archetypeId, p.cells.length, p.isBeam)) {
+            // Hotfix (2026-11-21): one projectile awards at most +1
+            // combo, however many of its cells connect.
+            if (countsForCombo(p.archetypeId, p.cells.length, p.isBeam) && !p.comboAwarded) {
+              p.comboAwarded = true;
               this.comboCount++;
               this.comboTimer = 4.0;
               this.comboMax = Math.max(this.comboMax, this.comboCount);
@@ -3407,8 +3453,12 @@ export class GameEngine {
             // 90s+ core hits deal double damage.
             const coreMult = this.gameTime >= 90 ? 2 : 1;
             // v2.2: sniper 1-2 cell projectiles deal 50% to the core.
-            const finalDmg = Math.round(
-              p.damagePerCell * mult * coreMult * sniperCoreDamageMult(p.archetypeId, p.cells.length)
+            // Hotfix (2026-11-21): one core hit deals at most 60.
+            const finalDmg = Math.min(
+              MAX_CORE_HIT_DMG,
+              Math.round(
+                p.damagePerCell * mult * coreMult * sniperCoreDamageMult(p.archetypeId, p.cells.length)
+              )
             );
             this.damageCore('enemy', finalDmg);
             this.stats.damageDealt += finalDmg;
@@ -3426,7 +3476,7 @@ export class GameEngine {
             );
             if (p.shapeType === 'meteor' && !p.isMeteorExploding) {
               p.isMeteorExploding = true;
-              const meteorDmg = Math.round(15 * mult);
+              const meteorDmg = Math.min(MAX_CORE_HIT_DMG, Math.round(15 * mult));
               this.damageCore('enemy', meteorDmg);
               this.stats.damageDealt += meteorDmg;
               this.particleSystem.addShockwave(cellCenterX, cellCenterY, 160, '#FF5500');
@@ -3464,7 +3514,10 @@ export class GameEngine {
               // v2.2 balance: a sniper 1-2 cell snipe does not raise the
               // combo or refresh its timer (damage still scales with the
               // current streak).
-              if (countsForCombo(p.archetypeId, p.cells.length, p.isBeam)) {
+              // Hotfix (2026-11-21): one projectile awards at most +1
+              // combo, however many of its cells connect.
+              if (countsForCombo(p.archetypeId, p.cells.length, p.isBeam) && !p.comboAwarded) {
+                p.comboAwarded = true;
                 this.combo2Count++;
                 this.combo2Timer = 4.0;
                 this.combo2Max = Math.max(this.combo2Max, this.combo2Count);
@@ -3508,7 +3561,7 @@ export class GameEngine {
           }
         }
 
-        // 2b. Rear core hit on my core (central 3 columns, behind my board).
+        // 2b. Rear core hit on my core (central 5 columns, behind my board).
         for (const cell of p.cells) {
           if (cell.destroyed) continue;
           const cellLeft = p.x + cell.relCol * (cellW + gap);
@@ -3517,13 +3570,16 @@ export class GameEngine {
           const cellCenterY = cellTop + cellH / 2;
           const col = Math.floor((cellCenterX - this.renderer.playerOriginX) / (cellW + gap));
           const boardBottom = this.renderer.playerOriginY + GRID_ROWS * (cellH + gap) - gap;
-          if (cellCenterY > boardBottom && col >= 3 && col <= 5) {
+          if (cellCenterY > boardBottom && col >= 2 && col <= 6) {
             let dmg = p.damagePerCell;
             if (this.mode === 'multi' || this.mode === 'royale') {
               // v2.2 balance: a sniper 1-2 cell snipe does not raise the
               // combo or refresh its timer (damage still scales with the
               // current streak).
-              if (countsForCombo(p.archetypeId, p.cells.length, p.isBeam)) {
+              // Hotfix (2026-11-21): one projectile awards at most +1
+              // combo, however many of its cells connect.
+              if (countsForCombo(p.archetypeId, p.cells.length, p.isBeam) && !p.comboAwarded) {
+                p.comboAwarded = true;
                 this.combo2Count++;
                 this.combo2Timer = 4.0;
                 this.combo2Max = Math.max(this.combo2Max, this.combo2Count);
@@ -3535,7 +3591,11 @@ export class GameEngine {
             }
             const coreMult = this.gameTime >= 90 ? 2 : 1;
             // v2.2: sniper 1-2 cell projectiles deal 50% to the core.
-            const finalDmg = Math.round(dmg * coreMult * sniperCoreDamageMult(p.archetypeId, p.cells.length));
+            // Hotfix (2026-11-21): one core hit deals at most 60.
+            const finalDmg = Math.min(
+              MAX_CORE_HIT_DMG,
+              Math.round(dmg * coreMult * sniperCoreDamageMult(p.archetypeId, p.cells.length))
+            );
             if (p.fromPlayerId) this.lastHitBy = p.fromPlayerId;
             const newHp = this.damageCore('player', finalDmg);
             this.stats.damageTaken += finalDmg;

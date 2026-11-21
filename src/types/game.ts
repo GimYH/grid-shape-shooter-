@@ -86,6 +86,11 @@ export interface ShapeProjectile {
   fromPlayerId?: string;
   targetColX?: number; // For homing
   isMeteorExploding?: boolean;
+  // Hotfix (2026-11-21): one projectile awards at most +1 combo, no
+  // matter how many of its cells hit (direct hit, core hit, or meteor
+  // AOE). Set by the engine on the first combo award; cleared never —
+  // a projectile lives only for one flight.
+  comboAwarded?: boolean;
 }
 
 export interface Particle {
