@@ -39,10 +39,11 @@ export class GridBoard {
   public collapsed: boolean = false;
   // v2.2 shrink zone: tiles covered by the closing wall lock individually.
   private shrinkLocked: boolean[][] = [];
-  // v3.0 Pity Guard (교착 방지): the board has no 3+ cluster right now,
-  // so the next refilled tile is forced to match an adjacent 2-cluster's
-  // color. Set by updateClusters(), consumed by update().
-  public pityArmed: boolean = false;
+  // Deadlock-Free Engine (2026-11-22): replaces the v3.0 Pity Guard
+  // (pityArmed / pityColorFor, removed) and the hotfix Anti-Clumping
+  // re-roll. Refill colors now come from rollRefillColor's three-step
+  // sweet-spot decision, and a fully stalled board is rescued by
+  // resolveDeadlock() (called from GameEngine, not from here).
 
   constructor(owner: 'player' | 'enemy', seed?: number) {
     this.owner = owner;
@@ -160,24 +161,234 @@ export class GridBoard {
     this.shrinkLocked[row][col] = locked;
   }
 
-  // Hotfix (2026-11-21): anti-clumping refill — if 2+ orthogonal
-  // neighbours share the rolled color, re-roll once. Deterministic given
-  // the board state, so both online clients draw the same sequence from
-  // the same seeded RNG (update()) or the same Math.random picks
-  // (refillRow(), applied verbatim remotely).
+  // Deadlock-Free Engine (2026-11-22): refill color decision, three
+  // sequential steps. All randomness comes from the caller's roll() —
+  // the seeded RNG inside update() so both online clients draw the same
+  // sequence (refillRow() passes Math.random and sends the picks
+  // verbatim instead; see its comment). Step 1: weighted draw with a
+  // 3-color minimum-ratio guard (a color under 20% of the colored
+  // active tiles rolls at 2.0x weight). Step 2: combo induction — when
+  // the board is starved (<= 2 launchable clusters) and this tile
+  // touches a 2-tile block, take that block's color 70% of the time to
+  // complete a 3+ cluster at once. Step 3: bomb suppression — if
+  // placing the chosen color here would join a 7+ cluster, re-roll once
+  // and accept whatever comes (no infinite re-rolls). Suppression is
+  // lifted in the shrink endgame (<= 12 active tiles), where big blocks
+  // are the only way to keep firing.
   private rollRefillColor(col: number, row: number, roll: () => number): TileColor {
-    const first = TILE_COLORS[Math.floor(roll() * TILE_COLORS.length)];
-    let same = 0;
-    for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+    let color = this.weightedColorRoll(roll);
+    const induc = this.inductionColorFor(col, row);
+    if (induc && roll() < 0.7) color = induc;
+    if (this.activeTileCount() > 12 && this.joinedClusterSize(col, row, color) >= 7) {
+      color = this.weightedColorRoll(roll);
+    }
+    return color;
+  }
+
+  // Step 1: weighted color roll. Colors under 20% of the colored active
+  // tiles get weight 2.0 (base 1.0 each). With no colored active tiles
+  // the weights are uniform.
+  private weightedColorRoll(roll: () => number): TileColor {
+    const counts: Record<TileColor, number> = { red: 0, blue: 0, yellow: 0 };
+    let total = 0;
+    for (let r = 0; r < GRID_ROWS; r++) {
+      for (let c = 0; c < GRID_COLS; c++) {
+        if (!this.isTileActive(c, r)) continue;
+        const colr = this.tiles[r][c].color;
+        if (!colr) continue;
+        counts[colr]++;
+        total++;
+      }
+    }
+    const weights = TILE_COLORS.map((colr) =>
+      total > 0 && counts[colr] / total < 0.2 ? 2.0 : 1.0
+    );
+    const sum = weights[0] + weights[1] + weights[2];
+    let x = roll() * sum;
+    for (let i = 0; i < TILE_COLORS.length; i++) {
+      x -= weights[i];
+      if (x <= 0) return TILE_COLORS[i];
+    }
+    return TILE_COLORS[TILE_COLORS.length - 1];
+  }
+
+  // Step 2: the color of an adjacent 2-tile cluster, when the board is
+  // starved (<= 2 launchable clusters). Scan order up, right, down,
+  // left — the first adjacent 2-cluster wins (all of them are one step
+  // away, so there is no nearer one to prefer). Reads the last computed
+  // clusters; the refilling tile is empty, so it belongs to none.
+  private inductionColorFor(col: number, row: number): TileColor | null {
+    if (this.clusters.filter((c) => c.isActivePad).length > 2) return null;
+    const dirs = [[0, -1], [1, 0], [0, 1], [-1, 0]] as const;
+    for (const [dc, dr] of dirs) {
       const nc = col + dc;
       const nr = row + dr;
       if (nc < 0 || nc >= GRID_COLS || nr < 0 || nr >= GRID_ROWS) continue;
-      if (this.tiles[nr][nc].color === first) same++;
+      const neighbor = this.tiles[nr][nc];
+      if (!neighbor.color) continue;
+      const cl = this.clusters.find((c) =>
+        c.tiles.some((t) => t.col === nc && t.row === nr)
+      );
+      if (cl && cl.tiles.length === 2) return cl.color;
     }
-    if (same >= 2) {
-      return TILE_COLORS[Math.floor(roll() * TILE_COLORS.length)];
+    return null;
+  }
+
+  // Step 3: size of the cluster that would form if (col, row) became
+  // `color` — 1 (this tile) plus the connected same-color active tiles
+  // around it. The candidate cell itself is empty; every other cell in
+  // the component must already carry the color.
+  private joinedClusterSize(col: number, row: number, color: TileColor): number {
+    const seen = new Set<string>([`${col},${row}`]);
+    const queue: { col: number; row: number }[] = [{ col, row }];
+    let size = 0;
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      size++;
+      for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nc = cur.col + dc;
+        const nr = cur.row + dr;
+        const key = `${nc},${nr}`;
+        if (seen.has(key)) continue;
+        if (nc < 0 || nc >= GRID_COLS || nr < 0 || nr >= GRID_ROWS) continue;
+        if (!this.isTileActive(nc, nr)) continue;
+        if (this.tiles[nr][nc].color !== color) continue;
+        seen.add(key);
+        queue.push({ col: nc, row: nr });
+      }
     }
-    return first;
+    return size;
+  }
+
+  // Playable tiles (not collapsed, not shrink-locked) — same definition
+  // updateClusters() uses for the min-launch-size relaxation.
+  public activeTileCount(): number {
+    let n = 0;
+    for (let r = 0; r < GRID_ROWS; r++) {
+      for (let c = 0; c < GRID_COLS; c++) {
+        if (!this.isTileLocked(c, r)) n++;
+      }
+    }
+    return n;
+  }
+
+  // Launchable clusters (isActivePad) — optionally filtered by color.
+  // The min-launch-size rule (sniper 1, <= 9 active tiles 2, else 3) is
+  // already encoded in isActivePad by updateClusters().
+  public launchableClusterCount(color?: TileColor): number {
+    return this.clusters.filter(
+      (c) => c.isActivePad && (color === undefined || c.color === color)
+    ).length;
+  }
+
+  // Empty active tiles still waiting on a refill cooldown. A board with
+  // none of these and no launchable cluster is fully stalled (RESYNC).
+  // Locked tiles never refill, so they are excluded.
+  public pendingRefillCount(): number {
+    let n = 0;
+    for (let r = 0; r < GRID_ROWS; r++) {
+      for (let c = 0; c < GRID_COLS; c++) {
+        if (!this.isTileActive(c, r)) continue;
+        const t = this.tiles[r][c];
+        if (!t.color && t.cooldownRemaining > 0) n++;
+      }
+    }
+    return n;
+  }
+
+  // GRID RESYNC (Deadlock-Free Engine): force-convert tiles so a
+  // launchable cluster appears. Finds up to 2 two-tile blocks nearest
+  // (nearCol, nearRow) and converts one adjacent active tile per block
+  // to the block's color (making 3+); with no 2-tile block, paints the
+  // 3 active tiles nearest the character one color. Returns the tiles
+  // actually changed (for sparks / popup). Converted tiles stay active
+  // immediately (no refill cooldown). Clusters are recomputed on the
+  // next board.update() — this method only mutates colors.
+  public resolveDeadlock(
+    nearCol: number,
+    nearRow: number
+  ): { col: number; row: number; color: TileColor }[] {
+    const changed: { col: number; row: number; color: TileColor }[] = [];
+    const converted = new Set<string>();
+    const manhattan = (c: number, r: number) =>
+      Math.abs(c - nearCol) + Math.abs(r - nearRow);
+    const dirs = [[0, -1], [1, 0], [0, 1], [-1, 0]] as const;
+
+    // Two-tile blocks, nearest first (distance = closest tile of the
+    // pair). Ties break by row-major order of the pair's first tile so
+    // the choice is deterministic.
+    const pairs = this.clusters
+      .filter((c) => c.tiles.length === 2)
+      .map((c) => ({
+        cluster: c,
+        dist: Math.min(...c.tiles.map((t) => manhattan(t.col, t.row))),
+      }))
+      .sort(
+        (a, b) =>
+          a.dist - b.dist ||
+          a.cluster.tiles[0].row - b.cluster.tiles[0].row ||
+          a.cluster.tiles[0].col - b.cluster.tiles[0].col
+      )
+      .slice(0, 2);
+
+    for (const { cluster } of pairs) {
+      // First adjacent active tile of a different color (pair tiles in
+      // order, neighbours up/right/down/left). Already-converted tiles
+      // are skipped so the second pair cannot steal the first pair's
+      // third tile back.
+      let target: { col: number; row: number } | null = null;
+      outer: for (const t of cluster.tiles) {
+        for (const [dc, dr] of dirs) {
+          const nc = t.col + dc;
+          const nr = t.row + dr;
+          if (nc < 0 || nc >= GRID_COLS || nr < 0 || nr >= GRID_ROWS) continue;
+          if (!this.isTileActive(nc, nr)) continue;
+          if (converted.has(`${nc},${nr}`)) continue;
+          const tile = this.tiles[nr][nc];
+          if (!tile.color || tile.color === cluster.color) continue;
+          target = { col: nc, row: nr };
+          break outer;
+        }
+      }
+      if (!target) continue;
+      this.tiles[target.row][target.col].color = cluster.color;
+      this.tiles[target.row][target.col].cooldownRemaining = 0;
+      converted.add(`${target.col},${target.row}`);
+      changed.push({ col: target.col, row: target.row, color: cluster.color });
+    }
+    if (changed.length > 0) return changed;
+
+    // No 2-tile block (or no convertible neighbour): paint the 3 active
+    // tiles nearest the character one color — the foot tile's color if
+    // it has one, else the most common color among the three (ties:
+    // red > blue > yellow).
+    const actives = this.activeTiles()
+      .filter((t) => this.tiles[t.row][t.col].color)
+      .map((t) => ({ ...t, dist: manhattan(t.col, t.row) }))
+      .sort((a, b) => a.dist - b.dist || a.row - b.row || a.col - b.col)
+      .slice(0, 3);
+    if (actives.length === 0) return changed;
+    const foot = this.tiles[nearRow]?.[nearCol];
+    let color: TileColor | null =
+      foot && this.isTileActive(nearCol, nearRow) ? foot.color : null;
+    if (!color) {
+      const counts: Record<TileColor, number> = { red: 0, blue: 0, yellow: 0 };
+      for (const t of actives) counts[this.tiles[t.row][t.col].color!]++;
+      color =
+        counts.red >= counts.blue && counts.red >= counts.yellow
+          ? 'red'
+          : counts.blue >= counts.yellow
+            ? 'blue'
+            : 'yellow';
+    }
+    for (const t of actives) {
+      const tile = this.tiles[t.row][t.col];
+      if (tile.color === color) continue;
+      tile.color = color;
+      tile.cooldownRemaining = 0;
+      changed.push({ col: t.col, row: t.row, color });
+    }
+    return changed;
   }
 
   public update(dt: number, cooldownSpeedMult: number = 1.0, isSniper: boolean = false): boolean {
@@ -199,20 +410,7 @@ export class GridBoard {
           tile.cooldownRemaining -= dt * cooldownSpeedMult;
           if (tile.cooldownRemaining <= 0) {
             tile.cooldownRemaining = 0;
-            // v3.0 Pity Guard: when armed, the next refilled tile takes
-            // the color of an adjacent 2-tile cluster (if any) instead of
-            // rolling — a forced 3-cluster seed. The pity stays armed
-            // when no adjacent 2-cluster exists (normal roll instead).
-            // Deterministic from the board state (last computed clusters),
-            // so both online clients agree without extra packets, and no
-            // seeded RNG draw is consumed on a forced refill.
-            const pity = this.pityArmed ? this.pityColorFor(c, r) : null;
-            if (pity) {
-              tile.color = pity;
-              this.pityArmed = false;
-            } else {
-              tile.color = this.rollRefillColor(c, r, () => this.nextRandom());
-            }
+            tile.color = this.rollRefillColor(c, r, () => this.nextRandom());
             hasRefilled = true;
           }
         }
@@ -239,12 +437,7 @@ export class GridBoard {
     // v2.2 late-game anti-stall: when collapse + shrink leave 9 or fewer
     // usable (unlocked) tiles, a 3-tile cluster is nearly impossible —
     // relax the minimum launch size to 2 (sniper stays at 1).
-    let activeTiles = 0;
-    for (let r = 0; r < GRID_ROWS; r++) {
-      for (let c = 0; c < GRID_COLS; c++) {
-        if (!this.isTileLocked(c, r)) activeTiles++;
-      }
-    }
+    const activeTiles = this.activeTileCount();
     const minLaunchSize = isSniper ? 1 : activeTiles <= 9 ? 2 : 3;
 
     for (let r = 0; r < GRID_ROWS; r++) {
@@ -303,30 +496,6 @@ export class GridBoard {
     }
 
     this.clusters = newClusters;
-    // v3.0 Pity Guard (교착 방지): when the whole board has no 3+ cluster,
-    // arm the forced refill for the next refilled tile. Disarms itself as
-    // soon as a 3+ cluster exists again.
-    this.pityArmed = !newClusters.some((c) => c.tiles.length >= 3);
-  }
-
-  // Pity color for a refilling tile: the color of an adjacent 2-tile
-  // cluster, if one touches this tile (order: up, right, down, left).
-  // Null when no adjacent 2-cluster exists. Reads the last computed
-  // clusters — the board has not changed since the previous update().
-  public pityColorFor(col: number, row: number): TileColor | null {
-    const dirs = [[0, -1], [1, 0], [0, 1], [-1, 0]] as const;
-    for (const [dc, dr] of dirs) {
-      const nc = col + dc;
-      const nr = row + dr;
-      if (nc < 0 || nc >= GRID_COLS || nr < 0 || nr >= GRID_ROWS) continue;
-      const neighbor = this.tiles[nr][nc];
-      if (!neighbor.color) continue;
-      const cl = this.clusters.find((c) =>
-        c.tiles.some((t) => t.col === nc && t.row === nr)
-      );
-      if (cl && cl.tiles.length === 2) return cl.color;
-    }
-    return null;
   }
 
   // v3.0 side disruption lane: destroy the rearmost ACTIVE tile in a side
