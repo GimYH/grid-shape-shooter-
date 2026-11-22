@@ -35,13 +35,13 @@ export const EFFECT_QUALITY_SPAWN_SCALE: Record<EffectQuality, number> = {
 // never allocates, filter()s or splice()s.
 export const ABSOLUTE_MAX_PARTICLES = 240;
 
-// Optimization (1.4): per-frame burst budget. It counts burst spawns
+// v3.0 Phase 2 (4.3): per-frame burst budget 20 (was 25).
 // (block destruction / launch bursts / trails) between two consecutive
 // update() calls, i.e. one frame. A 6+ clash or multi-cell meteor burst
 // that fires several emit calls in the same tick is clipped to this
 // budget, so the effect concentrates on the first 1-2 centers instead
 // of spraying hundreds of particles at once.
-export const FRAME_SPAWN_BUDGET = 25;
+export const FRAME_SPAWN_BUDGET = 20;
 
 export class ParticleSystem {
   // Fixed pool (see ABSOLUTE_MAX_PARTICLES). Only the first
@@ -216,12 +216,35 @@ export class ParticleSystem {
 
   public emitBlockDestruction(x: number, y: number, color: string, count: number = 16) {
     const n = Math.round(count * this.effectiveSpawnScale);
-    for (let i = 0; i < n; i++) {
+    // v3.0 Phase 2 (4.3): sharp straight sparks 6-10 (fast, short-lived
+    // lines) carry the impact; a few tumbling shards stay for the
+    // shatter feel. No fog blobs. (No fixed floor: the count scales with
+    // the quality/degrade multiplier, so a degraded 5-particle burst
+    // stays 5 instead of being pushed back up to 6.)
+    const sparkN = Math.min(10, Math.round(n * 0.7));
+    for (let i = 0; i < sparkN; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 200 + Math.random() * 220;
+      const life = 0.25 + Math.random() * 0.2;
+      if (
+        !this.spawn(
+          x,
+          y,
+          Math.cos(angle) * speed,
+          Math.sin(angle) * speed,
+          6 + Math.random() * 6,
+          color,
+          life,
+          0.45,
+          'line',
+        )
+      ) {
+        return;
+      }
+    }
+    for (let i = sparkN; i < n; i++) {
       const angle = Math.random() * Math.PI * 2;
       const speed = 100 + Math.random() * 260;
-      // Mostly tumbling shard triangles (shattering feel), a few soft
-      // circles for glow dust.
-      const isShard = Math.random() > 0.25;
       const life = 0.4 + Math.random() * 0.4;
       if (
         !this.spawn(
@@ -233,7 +256,7 @@ export class ParticleSystem {
           color,
           life,
           0.8,
-          isShard ? 'shard' : 'circle',
+          'shard',
           Math.random() * Math.PI * 2,
           (Math.random() - 0.5) * 14,
         )

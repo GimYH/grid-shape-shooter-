@@ -91,6 +91,11 @@ export interface ShapeProjectile {
   // AOE). Set by the engine on the first combo award; cleared never —
   // a projectile lives only for one flight.
   comboAwarded?: boolean;
+  // v3.0 counter-overcharge: true once this projectile has accelerated
+  // from a neutral-clash win (initial 3+ cells, once per projectile).
+  // The flag lives on the projectile instead of a manager-side Set, so
+  // the once-only rule travels with the object it guards.
+  overchargeTriggered?: boolean;
 }
 
 export interface Particle {
@@ -165,6 +170,10 @@ export interface NoContinueRecord {
 export interface CampaignProgress {
   maxCleared: number; // 0..30
   noContinue: NoContinueRecord | null;
+  // v3.0 Phase 2: last single-campaign stage + archetype actually
+  // deployed (title-screen one-click quick entry).
+  lastStage?: number;
+  lastArchetype?: ArchetypeId;
 }
 
 // Rear core state (v2.2): one per side. `collapsed` turns on when the core

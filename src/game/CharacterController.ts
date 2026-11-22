@@ -1,7 +1,12 @@
 import { ArchetypeId, SkillEffect, TileColor } from '../types/game';
 import {
   ARCHETYPES,
+  DEFAULT_PLAYER_HP,
+  MONOCHROME_SELF_DAMAGE,
+  SPEEDSTER_DASH_BUFF_SEC,
+  SPEEDSTER_DASH_COOLDOWN,
   SPEEDSTER_FIRE_BUFF_SEC,
+  SPEEDSTER_MOVE_SPEED,
   TRANSPORTER_SWAP_BUFF_SEC,
 } from './archetypes';
 import { GridBoard, GRID_COLS, GRID_ROWS } from './GridEngine';
@@ -15,22 +20,26 @@ export class PlayerCharacter {
   public vy: number = 0;
   public radius: number = 22;
 
-  public hp: number = 100;
-  public maxHp: number = 100;
+  // v3.0: default character HP is 120 (was 100).
+  public hp: number = DEFAULT_PLAYER_HP;
+  public maxHp: number = DEFAULT_PLAYER_HP;
   public shield: number = 0;
   // v2.2 Phase 2: diegetic HP bar residual — the red ghost bar eases
   // toward hp after damage (snaps up instantly on heals).
-  public displayHp: number = 100;
+  public displayHp: number = DEFAULT_PLAYER_HP;
 
   public archetypeId: ArchetypeId = 'lancer';
   public skillCooldownRemaining: number = 0;
   // v2.2 balance: launch buff windows (seconds remaining, game time).
-  // Transporter: +15% damage on the first launch within 1.5s of a swap.
-  // Speedster: +15% speed/damage on the first launch within 1.5s of a
-  // blink or dash. Consumed by GameEngine.handlePlayerLaunch / the AI
-  // launch handler; the renderer draws the buff ring while active.
+  // Transporter: +15% damage on the first 4+ launch within 1.5s of a swap.
+  // Speedster blink: +20% damage on the first 3+ launch within 1.5s of a
+  // blink. Speedster dash: +10% speed on the first launch within 1.0s of
+  // a dash (dashSpeedBuffRemaining, no ring drawn). Consumed by
+  // GameEngine.handlePlayerLaunch / the AI launch handler; the renderer
+  // draws the buff ring while swap/speed buffs are active.
   public swapBuffRemaining: number = 0;
   public speedBuffRemaining: number = 0;
+  public dashSpeedBuffRemaining: number = 0;
 
   // Hotfix (2026-11-21): monochrome absorb internal cooldown (seconds
   // remaining, game time). While > 0 an absorb still evaporates the
@@ -96,6 +105,7 @@ export class PlayerCharacter {
     this.skillCooldownRemaining = 0;
     this.swapBuffRemaining = 0;
     this.speedBuffRemaining = 0;
+    this.dashSpeedBuffRemaining = 0;
     this.absorbCooldownRemaining = 0;
     this.grabbedTileColor = null;
     this.grabbedPos = null;
@@ -114,15 +124,17 @@ export class PlayerCharacter {
 
   public performDash(particleSystem: ParticleSystem): boolean {
     if (this.dashCooldownRemaining > 0) return false;
-    const maxCD = this.archetypeId === 'speedster' ? 1.0 : 1.6;
+    // v3.0: speedster dash cooldown is 1.1s (was 1.0s).
+    const maxCD = this.archetypeId === 'speedster' ? SPEEDSTER_DASH_COOLDOWN : 1.6;
     this.dashCooldownMax = maxCD;
     this.dashCooldownRemaining = maxCD;
     this.dashDurationRemaining = 0.16;
     this.isInvincible = true;
-    // v2.2 balance: a speedster dash arms the 1.5s fire buff (first
-    // launch after the dash gets +15% speed and +15% damage).
+    // v3.0: a speedster dash arms the 1.0s dash speed buff (the first
+    // launch within 1.0s is +10% faster). The blink damage buff is
+    // separate (speedBuffRemaining, armed by the blink skill).
     if (this.archetypeId === 'speedster') {
-      this.speedBuffRemaining = SPEEDSTER_FIRE_BUFF_SEC;
+      this.dashSpeedBuffRemaining = SPEEDSTER_DASH_BUFF_SEC;
     }
 
     soundManager.playDash();
@@ -185,6 +197,9 @@ export class PlayerCharacter {
     if (this.speedBuffRemaining > 0) {
       this.speedBuffRemaining = Math.max(0, this.speedBuffRemaining - dt);
     }
+    if (this.dashSpeedBuffRemaining > 0) {
+      this.dashSpeedBuffRemaining = Math.max(0, this.dashSpeedBuffRemaining - dt);
+    }
     // v2.2 Phase 2: the red residual bar on the diegetic HP bar eases
     // down toward real HP (45 HP/s); heals snap it up at once.
     if (this.displayHp > this.hp) {
@@ -211,13 +226,6 @@ export class PlayerCharacter {
     if (this.slowTimer > 0) {
       this.slowTimer = Math.max(0, this.slowTimer - dt);
     }
-    // v2.2 balance: the remote copy's launch buff windows tick the same way.
-    if (this.swapBuffRemaining > 0) {
-      this.swapBuffRemaining = Math.max(0, this.swapBuffRemaining - dt);
-    }
-    if (this.speedBuffRemaining > 0) {
-      this.speedBuffRemaining = Math.max(0, this.speedBuffRemaining - dt);
-    }
     // v2.2 discard magazine recharge: 1 stack per 1.2s.
     if (this.discardStacks < 3) {
       this.discardRecharge += dt;
@@ -241,7 +249,8 @@ export class PlayerCharacter {
     const currentTile = board.tiles[this.currentRow]?.[this.currentCol];
 
     // Calculate movement speed
-    let baseSpeed = 420;
+    // v2.2 base speed: 420 px/s. v3.0: speedster's base speed is 460 px/s.
+    let baseSpeed = this.archetypeId === 'speedster' ? SPEEDSTER_MOVE_SPEED : 420;
     if (this.archetypeId === 'transporter') {
       baseSpeed *= 1.15; // +15% passive
     }
@@ -429,19 +438,21 @@ export class PlayerCharacter {
 
     switch (this.archetypeId) {
       case 'lancer': {
-        // Convert 2 tiles in current column to Red
-        board.convertColumnToRed(this.currentCol, 2);
+        // v3.0: convert up to 3 active tiles in the current column to red
+        // (was 2).
+        board.convertColumnToRed(this.currentCol, 3);
         particleSystem.addFloatingText(this.x, this.y - 30, 'CRIMSON LANCE!', '#FF3366', 16);
         particleSystem.addShockwave(this.x, this.y, 80, '#FF3366');
         this.skillCooldownRemaining = config.skillCooldown;
         return true;
       }
       case 'wave': {
-        // Refill all cooldown tiles in current row
+        // v3.0: refill up to 3 empty tiles in the current row with blue,
+        // immediately (was: refill every cooldown tile in the row).
         if (effect?.kind === 'wave') {
           board.refillRowWith(this.currentRow, effect.tiles);
         } else {
-          this.lastSkillEffect = { kind: 'wave', tiles: board.refillRow(this.currentRow) };
+          this.lastSkillEffect = { kind: 'wave', tiles: board.refillRowBlue(this.currentRow, 3) };
         }
         particleSystem.addFloatingText(this.x, this.y - 30, 'TIDE SURGE!', '#33CCFF', 16);
         particleSystem.addShockwave(this.x, this.y, 100, '#33CCFF');
@@ -465,8 +476,10 @@ export class PlayerCharacter {
         return true;
       }
       case 'painter': {
-        // Paint adjacent to dominant color
-        board.paintAdjacentDominant(this.currentCol, this.currentRow);
+        // v3.0: paint up to 3 active tiles adjacent to the feet (up/down/
+        // left/right) with the foot tile's color (was: paint the cross to
+        // the dominant color).
+        board.paintAdjacentFromFoot(this.currentCol, this.currentRow, 3);
         particleSystem.addFloatingText(this.x, this.y - 30, 'CHROMA INFUSION!', '#FF8800', 16);
         particleSystem.addShockwave(this.x, this.y, 90, '#FF8800');
         this.skillCooldownRemaining = config.skillCooldown;
@@ -553,20 +566,26 @@ export class PlayerCharacter {
         }
         particleSystem.addFloatingText(this.x, this.y - 30, 'BLINK CHARGE!', '#FFCC00', 16);
         particleSystem.addShockwave(this.x, this.y, 110, '#FFCC00');
-        // v2.2 balance: blink arms the 1.5s fire buff (first launch after
-        // the blink gets +15% speed and +15% damage).
+        // v3.0: blink arms the 1.5s damage buff — the first 3+ cluster
+        // launch within 1.5s deals +20% damage (was +15% speed and
+        // +15% damage on any launch).
         this.speedBuffRemaining = SPEEDSTER_FIRE_BUFF_SEC;
         this.skillCooldownRemaining = config.skillCooldown;
         return true;
       }
       case 'monochrome': {
-        // Overdrive: 3 tiles to red + 1.5x damage boost
+        // Overdrive: 3 tiles to red + 1.35x damage boost
         if (effect?.kind === 'monochrome') {
           board.convertTilesToRed(effect.tiles);
         } else {
           this.lastSkillEffect = { kind: 'monochrome', tiles: board.convertRandomToRed(3) };
         }
         this.overdriveActive = true;
+        // v3.0: casting Blood Overdrive costs 6 HP — unless the caster
+        // is at 10 HP or less, in which case no HP is spent.
+        if (this.hp > 10) {
+          this.hp = Math.max(0, this.hp - MONOCHROME_SELF_DAMAGE);
+        }
         particleSystem.addFloatingText(this.x, this.y - 30, 'BLOOD OVERDRIVE!', '#FF0033', 18);
         particleSystem.addShockwave(this.x, this.y, 120, '#FF0033');
         this.skillCooldownRemaining = config.skillCooldown;
@@ -577,7 +596,7 @@ export class PlayerCharacter {
   }
 
   public takeDamage(amount: number, isDirect: boolean = true) {
-    // Dash, collapse-push, and the 0.15s consecutive-hit protection all
+    // Dash, collapse-push, and the 0.18s consecutive-hit protection all
     // block damage. invincibleTimer is checked directly (not just the
     // isInvincible flag) so protection set mid-frame works immediately.
     if (this.isInvincible || this.invincibleTimer > 0) {
@@ -606,12 +625,13 @@ export class PlayerCharacter {
     this.targetY = startY;
     this.vx = 0;
     this.vy = 0;
-    this.hp = 100;
-    this.displayHp = 100;
+    this.hp = DEFAULT_PLAYER_HP;
+    this.displayHp = DEFAULT_PLAYER_HP;
     this.shield = 0;
     this.skillCooldownRemaining = 0;
     this.swapBuffRemaining = 0;
     this.speedBuffRemaining = 0;
+    this.dashSpeedBuffRemaining = 0;
     this.absorbCooldownRemaining = 0;
     this.dashCooldownRemaining = 0;
     this.dashDurationRemaining = 0;

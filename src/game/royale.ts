@@ -133,7 +133,9 @@ export interface RoyaleTargetCandidate {
 // Combined HP + core ratio (0..2). Used by both KO targeting (lowest) and
 // the LEADER tiebreak (highest).
 export function royaleHealthSum(p: { hp: number; coreHp: number }): number {
-  return p.hp / 100 + p.coreHp / 250;
+  // v3.0: default HP 120 / core 300 (was 100 / 250). Uniform 0.8333x
+  // rescale, so targeting decisions are unchanged; the 0..2 range is kept.
+  return p.hp / 120 + p.coreHp / 300;
 }
 
 // Pick a target id for `selfId` under `mode`. Returns null when nobody is

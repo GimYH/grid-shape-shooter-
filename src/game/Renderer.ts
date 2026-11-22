@@ -3,7 +3,7 @@ import { PlayerCharacter } from './CharacterController';
 import { AIController } from './AIController';
 import { ProjectileManager } from './ProjectileManager';
 import { ParticleSystem } from './ParticleSystem';
-import { ARCHETYPES, ARCHETYPE_LIST, SPEEDSTER_FIRE_BUFF_SEC, TRANSPORTER_SWAP_BUFF_SEC } from './archetypes';
+import { ARCHETYPES, ARCHETYPE_LIST, MONOCHROME_SHIELD_MAX, SPEEDSTER_FIRE_BUFF_SEC, TRANSPORTER_SWAP_BUFF_SEC } from './archetypes';
 import { STAGES, SECTOR_THEMES } from './stages';
 import { ArchetypeId, CoreState, ShrinkPhase, ShrinkRect, TileColor } from '../types/game';
 import { ARCHETYPE_PORTRAITS } from '../assets/portraits';
@@ -106,7 +106,10 @@ export class CanvasRenderer {
     isRoyale?: boolean,
     portalWarnings?: { col: number; until: number }[],
     cutin?: { portrait: ArchetypeId; label: string; until: number; durationMs: number } | null,
-    arcade?: ArcadeRenderState | null
+    arcade?: ArcadeRenderState | null,
+    // v3.0: sniper beam telegraphs — pending beams { owner, col, fireAt }.
+    // Drawn as a red aim line for 0.35s before the beam fires.
+    beamTelegraphs?: { owner: 'player' | 'enemy'; col: number; fireAt: number }[]
   ) {
     ctx.save();
 
@@ -168,6 +171,11 @@ export class CanvasRenderer {
       this.renderLaserTelegraphs(ctx, arcade.laserCols, gameTime);
     }
 
+    // 6b2. Sniper beam telegraphs (0.35s red aim line before the beam fires).
+    if (beamTelegraphs && beamTelegraphs.length > 0) {
+      this.renderBeamTelegraphs(ctx, beamTelegraphs, gameTime);
+    }
+
     // 6c. Shrink walls (over the boards, under the characters)
     if (shrinkPhase === 'shrinking' || shrinkPhase === 'closed') {
       if (!isRoyale) this.renderShrinkWall(ctx, shrinkRect2 ?? null, this.enemyOriginX, this.enemyOriginY, gameTime);
@@ -195,6 +203,79 @@ export class CanvasRenderer {
     // 10. Portrait cut-in (skill cast / combo 7+ / boss awakening).
     if (cutin) this.renderCutin(ctx, cutin);
 
+    // 10b. Boss awakening: a short, faint red crack overlay while the
+    // OMNI-AWAKENING cut-in runs (first 0.9s only — a warning tint,
+    // never a full-screen flash).
+    if (cutin && cutin.label === 'OMNI-AWAKENING') this.renderAwakeningCrack(ctx, cutin);
+
+    // 11. v3.0 Phase 2 Zone 1: low-HP red vignette at the screen edge
+    // when my HP drops to 30 or below (local 2P: either human).
+    const lowHp =
+      (player.hp > 0 && player.hp <= 30) || (player2 !== null && player2.hp > 0 && player2.hp <= 30);
+    if (lowHp) this.renderLowHpVignette(ctx, gameTime);
+
+    ctx.restore();
+  }
+
+  // v3.0 Phase 2 Zone 1: red vignette hugging the screen edge while
+  // low on HP. Pulses gently so it reads as a warning, not a border.
+  private renderLowHpVignette(ctx: CanvasRenderingContext2D, time: number) {
+    const pulse = 0.2 + 0.08 * Math.sin(time * 5);
+    const grad = ctx.createRadialGradient(
+      this.canvasWidth / 2, this.canvasHeight / 2, Math.min(this.canvasWidth, this.canvasHeight) * 0.42,
+      this.canvasWidth / 2, this.canvasHeight / 2, Math.max(this.canvasWidth, this.canvasHeight) * 0.72
+    );
+    grad.addColorStop(0, 'rgba(255, 0, 40, 0)');
+    grad.addColorStop(1, `rgba(255, 0, 40, ${pulse})`);
+    ctx.save();
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+    ctx.restore();
+  }
+
+  // v3.0 Phase 3: boss awakening red crack overlay. A faint red edge
+  // vignette plus jagged crack lines radiating from the boss (top
+  // center), fading out over the first 0.9s of the 1.5s cut-in. The
+  // geometry is fixed (no per-frame randomness) so it reads as cracks,
+  // not noise, and the peak alpha (0.28) never hides the board.
+  private renderAwakeningCrack(
+    ctx: CanvasRenderingContext2D,
+    cutin: { portrait: ArchetypeId; label: string; until: number; durationMs: number }
+  ) {
+    const remaining = cutin.until - performance.now();
+    if (remaining <= 0) return;
+    const elapsed = Math.max(0, cutin.durationMs - remaining);
+    const flashMs = 900;
+    if (elapsed > flashMs) return;
+    const fade = 1 - elapsed / flashMs;
+    const alpha = 0.28 * fade;
+    ctx.save();
+    // Faint red edge vignette.
+    const grad = ctx.createRadialGradient(
+      this.canvasWidth / 2, this.canvasHeight / 2, Math.min(this.canvasWidth, this.canvasHeight) * 0.4,
+      this.canvasWidth / 2, this.canvasHeight / 2, Math.max(this.canvasWidth, this.canvasHeight) * 0.7
+    );
+    grad.addColorStop(0, 'rgba(255, 0, 51, 0)');
+    grad.addColorStop(1, `rgba(255, 0, 51, ${alpha})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+    // Crack lines radiating from the boss position (top center).
+    const cracks: [number, number][][] = [
+      [[960, 210], [920, 150], [880, 110], [850, 60]],
+      [[960, 210], [1010, 140], [1050, 90], [1090, 50]],
+      [[960, 210], [890, 190], [820, 170], [760, 180]],
+      [[960, 210], [1030, 200], [1100, 220], [1170, 200]],
+      [[960, 210], [950, 280], [970, 340], [940, 400]],
+    ];
+    ctx.strokeStyle = `rgba(255, 32, 64, ${alpha})`;
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = 'miter';
+    for (const path of cracks) {
+      ctx.beginPath();
+      ctx.moveTo(path[0][0], path[0][1]);
+      for (let i = 1; i < path.length; i++) ctx.lineTo(path[i][0], path[i][1]);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -254,7 +335,8 @@ export class CanvasRenderer {
   }
 
   private renderBackground(ctx: CanvasRenderingContext2D, time: number) {
-    // Deep sci-fi radial gradient
+    // v3.0 Phase 2 Layer 0: flat #070A12 base (5-10% luminance) with a
+    // faint center lift; sector tint/glow stays on top.
     const bgGrad = ctx.createRadialGradient(
       this.canvasWidth / 2,
       this.canvasHeight / 2,
@@ -263,9 +345,9 @@ export class CanvasRenderer {
       this.canvasHeight / 2,
       1100
     );
-    bgGrad.addColorStop(0, '#0c1222');
-    bgGrad.addColorStop(0.6, '#070a14');
-    bgGrad.addColorStop(1, '#03050a');
+    bgGrad.addColorStop(0, '#0d1322');
+    bgGrad.addColorStop(0.6, '#070a12');
+    bgGrad.addColorStop(1, '#04060c');
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
 
@@ -635,6 +717,42 @@ export class CanvasRenderer {
   }
 
   // ARCADE — 메가 보스 레이저 예고선 (1.2초간 플레이어 보드 열 위에 표시).
+  // v3.0 sniper beam telegraph: a red aim line down one column, spanning
+  // both boards and the neutral zone (the beam's full path). Same visual
+  // language as the mega-boss laser telegraph (translucent red band +
+  // dashed border), but the band brightens as the 0.35s telegraph runs
+  // out so the firing moment reads clearly.
+  private renderBeamTelegraphs(
+    ctx: CanvasRenderingContext2D,
+    beams: { owner: 'player' | 'enemy'; col: number; fireAt: number }[],
+    time: number
+  ) {
+    const step = this.cellW + this.gap;
+    const top = this.enemyOriginY;
+    const bottom = this.playerOriginY + GRID_ROWS * step - this.gap;
+    ctx.save();
+    for (const b of beams) {
+      // 0.35s telegraph (GameEngine.BEAM_TELEGRAPH_SEC) — the band starts
+      // faint and brightens toward the firing moment.
+      const remaining = Math.max(0, b.fireAt - time);
+      const frac = 1 - remaining / 0.35;
+      const pulse = 0.12 + 0.4 * frac + 0.08 * Math.sin(time * 20);
+      const x = this.playerOriginX + b.col * step;
+      ctx.fillStyle = `rgba(255, 34, 68, ${pulse})`;
+      ctx.fillRect(x, top, this.cellW, bottom - top);
+      ctx.strokeStyle = `rgba(255, 34, 68, ${Math.min(1, pulse + 0.35)})`;
+      ctx.lineWidth = 3;
+      ctx.setLineDash([10, 8]);
+      ctx.strokeRect(x + 1.5, top + 1.5, this.cellW - 3, bottom - top - 3);
+      ctx.setLineDash([]);
+      ctx.font = '900 22px "Chakra Petch", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillText('!', x + this.cellW / 2, top + 30);
+    }
+    ctx.restore();
+  }
+
   private renderLaserTelegraphs(ctx: CanvasRenderingContext2D, cols: number[], time: number) {
     const pulse = 0.3 + 0.25 * Math.sin(time * 16);
     const step = this.cellW + this.gap;
@@ -727,8 +845,9 @@ export class CanvasRenderer {
     ctx.restore();
   }
 
-  // v2.2 shrink wall: red translucent bands cover the board outside the
-  // safe rect, with a pulsing border around the safe zone.
+  // v3.0 Phase 2 Layer 1: shrink wall is a dark veil over the board
+  // outside the safe rect plus a 2px red laser inner border (the old
+  // red translucent bands are gone — they read as damage, not a wall).
   private renderShrinkWall(
     ctx: CanvasRenderingContext2D,
     rect: ShrinkRect | null,
@@ -741,10 +860,9 @@ export class CanvasRenderer {
     const totalH = GRID_ROWS * this.cellH + (GRID_ROWS - 1) * this.gap;
     const bx = originX;
     const by = originY;
-    const pulse = 0.22 + Math.sin(time * 6) * 0.08;
 
     ctx.save();
-    ctx.fillStyle = `rgba(255, 30, 50, ${pulse})`;
+    ctx.fillStyle = 'rgba(15, 0, 5, 0.72)';
     if (rect.y > by) ctx.fillRect(bx, by, totalW, rect.y - by);
     const bottom = rect.y + rect.h;
     if (bottom < by + totalH) ctx.fillRect(bx, bottom, totalW, by + totalH - bottom);
@@ -752,8 +870,8 @@ export class CanvasRenderer {
     const right = rect.x + rect.w;
     if (right < bx + totalW) ctx.fillRect(right, rect.y, bx + totalW - right, rect.h);
     if (rect.w > 0 && rect.h > 0) {
-      ctx.strokeStyle = `rgba(255, 60, 80, ${0.5 + Math.sin(time * 6) * 0.2})`;
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = `rgba(255, 40, 60, ${0.75 + Math.sin(time * 6) * 0.2})`;
+      ctx.lineWidth = 2;
       ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
     }
     ctx.restore();
@@ -790,18 +908,25 @@ export class CanvasRenderer {
     );
 
     // v2.2 Phase 2: frontline glow — the boundary of the front 2 rows
-    // (player rows 0-1, enemy rows 3-4) where the x1.25/x1.15 bonus applies.
+    // (player rows 0-1, enemy rows 3-4) where the x1.20/x1.15 bonus
+    // applies. v3.0 Phase 2: no shadowBlur in the board loop — the glow
+    // is a wide faint stroke under a thin bright one.
     {
       const rowStep = this.cellH + this.gap;
       const frontY =
         owner === 'player'
           ? originY + 2 * rowStep - this.gap / 2
           : originY + 3 * rowStep - this.gap / 2;
+      const glowColor = owner === 'player' ? '0, 255, 170' : '255, 51, 102';
       ctx.save();
-      ctx.strokeStyle = owner === 'player' ? 'rgba(0, 255, 170, 0.5)' : 'rgba(255, 51, 102, 0.5)';
-      ctx.shadowColor = owner === 'player' ? '#00FFAA' : '#FF3366';
-      ctx.shadowBlur = 8;
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = `rgba(${glowColor}, 0.18)`;
+      ctx.beginPath();
+      ctx.moveTo(originX, frontY);
+      ctx.lineTo(originX + totalW, frontY);
+      ctx.stroke();
       ctx.lineWidth = 2;
+      ctx.strokeStyle = `rgba(${glowColor}, 0.55)`;
       ctx.beginPath();
       ctx.moveTo(originX, frontY);
       ctx.lineTo(originX + totalW, frontY);
@@ -873,25 +998,20 @@ export class CanvasRenderer {
     // instead of collapsing into circles.
     const radius = Math.min(14, w / 2 - 2, h / 2 - 2);
 
-    // v2.2 locked tile (collapsed column or shrink wall): dark slab with a
-    // red X. It never refills and never joins a cluster.
+    // v3.0 Phase 2 Layer 1: locked tile (collapsed column or shrink
+    // wall) is a Void — fully darkened empty space with one inner dashed
+    // border line, so it never reads as a tile that could still join a
+    // cluster. (The old red X box is gone.)
     if (isLocked) {
-      ctx.fillStyle = 'rgba(10, 12, 20, 0.92)';
-      ctx.strokeStyle = 'rgba(255, 60, 80, 0.4)';
-      ctx.lineWidth = 1.5;
+      ctx.fillStyle = 'rgba(4, 6, 11, 0.96)';
       this.drawRoundedRect(ctx, x, y, w, h, radius);
       ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 5]);
+      this.drawRoundedRect(ctx, x + 3, y + 3, w - 6, h - 6, Math.max(2, radius - 3));
       ctx.stroke();
-      ctx.strokeStyle = 'rgba(255, 60, 80, 0.55)';
-      ctx.lineWidth = 2;
-      ctx.lineCap = 'round';
-      const pad = 10;
-      ctx.beginPath();
-      ctx.moveTo(x + pad, y + pad);
-      ctx.lineTo(x + w - pad, y + h - pad);
-      ctx.moveTo(x + w - pad, y + pad);
-      ctx.lineTo(x + pad, y + h - pad);
-      ctx.stroke();
+      ctx.setLineDash([]);
       return;
     }
 
@@ -920,20 +1040,20 @@ export class CanvasRenderer {
         ctx.fill();
       }
 
-      // Circular reload progress (denominator is this tile's own cooldown)
+      // v3.0 Phase 2 Layer 1: bottom-to-top refill gauge — the tile
+      // fills upward as its cooldown runs out (replaces the old circular
+      // arc + seconds text).
       const progress = cooldownMax > 0 ? Math.max(0, Math.min(1, 1 - cooldownRemaining / cooldownMax)) : 1;
-      const cx = x + w / 2;
-      const cy = y + h / 2;
+      const gaugeH = (h - 12) * progress;
+      if (gaugeH > 0) {
+        ctx.fillStyle = 'rgba(100, 140, 200, 0.4)';
+        this.drawRoundedRect(ctx, x + 6, y + h - 6 - gaugeH, w - 12, gaugeH, 4);
+        ctx.fill();
+      }
       ctx.strokeStyle = 'rgba(100, 120, 160, 0.45)';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(cx, cy, 14, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
+      ctx.lineWidth = 1.5;
+      this.drawRoundedRect(ctx, x + 6, y + 6, w - 12, h - 12, 4);
       ctx.stroke();
-
-      ctx.fillStyle = 'rgba(150, 170, 200, 0.6)';
-      ctx.font = '600 11px "JetBrains Mono", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`${cooldownRemaining.toFixed(1)}s`, cx, cy + 4);
       return;
     }
 
@@ -999,25 +1119,27 @@ export class CanvasRenderer {
     ctx.fill();
     ctx.restore();
 
-    // v2.2 Phase 2: colorblind symbol — low-alpha geometry at tile
-    // center (red triangle, blue square, yellow circle).
+    // v3.0 Phase 2 Layer 1: colorblind symbol — hollow low-alpha
+    // geometry at tile center (red outline triangle, blue outline
+    // square, yellow outline circle).
     ctx.save();
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.lineWidth = 2;
     const scx = x + w / 2;
     const scy = y + h / 2;
     if (color === 'red') {
       ctx.beginPath();
-      ctx.moveTo(scx, scy - 8);
-      ctx.lineTo(scx + 8, scy + 6);
-      ctx.lineTo(scx - 8, scy + 6);
+      ctx.moveTo(scx, scy - 9);
+      ctx.lineTo(scx + 9, scy + 7);
+      ctx.lineTo(scx - 9, scy + 7);
       ctx.closePath();
-      ctx.fill();
+      ctx.stroke();
     } else if (color === 'blue') {
-      ctx.fillRect(scx - 7, scy - 7, 14, 14);
+      ctx.strokeRect(scx - 8, scy - 8, 16, 16);
     } else {
       ctx.beginPath();
-      ctx.arc(scx, scy, 8, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.arc(scx, scy, 9, 0, Math.PI * 2);
+      ctx.stroke();
     }
     ctx.restore();
 
@@ -1029,18 +1151,8 @@ export class CanvasRenderer {
       ctx.stroke();
     }
 
-    // Shape type badge icon indicator in corner
-    if (isActivePad && shapeType && shapeType !== 'standard') {
-      ctx.font = '700 10px "Chakra Petch", monospace';
-      ctx.fillStyle = '#FFFFFF';
-      ctx.textAlign = 'right';
-      const label =
-        shapeType === 'spear' ? '✦ SPEAR' :
-        shapeType === 'wall' ? '❚ WALL' :
-        shapeType === 'homing' ? '⦿ HOMING' :
-        shapeType === 'meteor' ? '✸ METEOR' : '';
-      ctx.fillText(label, x + w - 8, y + 16);
-    }
+    // v3.0 Phase 2 Layer 1: no English text on tiles — the cluster
+    // shape + size now live in the centroid badge (renderClusterOutlines).
 
     // Crosshair target overlay if character is standing on this tile
     // (soft rounded corner brackets).
@@ -1115,21 +1227,32 @@ export class CanvasRenderer {
         }
       }
 
-      // v2.2 Phase 2: cluster size number at the centroid.
+      // v3.0 Phase 2 Layer 1: cluster badge — one shape symbol + size
+      // number in a dark pill at the centroid (spear ▲, wall ▬, homing
+      // ⌖, meteor ✦; a standard cluster shows the number only).
       const cx = cluster.tiles.reduce((a, t) => a + originX + t.col * (this.cellW + this.gap) + this.cellW / 2, 0) / cluster.tiles.length;
       const cy = cluster.tiles.reduce((a, t) => a + originY + t.row * (this.cellH + this.gap) + this.cellH / 2, 0) / cluster.tiles.length;
+      const shapeSymbol =
+        cluster.shapeType === 'spear' ? '▲' :
+        cluster.shapeType === 'wall' ? '▬' :
+        cluster.shapeType === 'homing' ? '⌖' :
+        cluster.shapeType === 'meteor' ? '✦' : '';
+      const badgeText = shapeSymbol ? `${shapeSymbol} ${cluster.tiles.length}` : String(cluster.tiles.length);
       ctx.save();
       ctx.font = '700 13px "Chakra Petch", monospace';
       ctx.textAlign = 'center';
+      const textW = ctx.measureText(badgeText).width;
+      const pillW = textW + 14;
+      const pillH = 22;
       ctx.fillStyle = 'rgba(3, 6, 12, 0.85)';
-      ctx.beginPath();
-      ctx.arc(cx, cy, 11, 0, Math.PI * 2);
+      this.drawRoundedRect(ctx, cx - pillW / 2, cy - pillH / 2, pillW, pillH, 11);
       ctx.fill();
       ctx.strokeStyle = hex;
       ctx.lineWidth = 1.5;
+      this.drawRoundedRect(ctx, cx - pillW / 2, cy - pillH / 2, pillW, pillH, 11);
       ctx.stroke();
       ctx.fillStyle = '#FFFFFF';
-      ctx.fillText(String(cluster.tiles.length), cx, cy + 4.5);
+      ctx.fillText(badgeText, cx, cy + 4.5);
       ctx.restore();
 
       // v2.2 Phase 2: launch-lane rail — a faint vertical dotted line over
@@ -1225,10 +1348,12 @@ export class CanvasRenderer {
     }
   }
 
-  // v2.2 Phase 2: diegetic character HUD — 48x6 HP bar (+30px below the
-  // fighter, flips to -32px above on the edge row), 25 HP tick marks, a
-  // red residual bar that eases toward real HP, a white shield overlay,
-  // discard pips, and a yellow wavy ring while slowed.
+  // v3.0 Phase 2 Zone 1: diegetic character HUD — 50x6 HP bar (+30px
+  // below the fighter, flips to -34px above on the edge row), 30 HP tick
+  // marks (v3.0 base HP 120 = 4 segments; bigger max HP falls back to
+  // quarters), a red residual bar that eases toward real HP, a white
+  // shield overlay (shield max 25), discard pips, and a yellow wavy ring
+  // while slowed.
   // v2.2 balance: buffRings draws the launch-buff rings — a dashed purple
   // ring while the transporter swap-link buff is up, a dashed yellow ring
   // while the speedster fire buff is up. Each ring fades as its window
@@ -1250,9 +1375,9 @@ export class CanvasRenderer {
     swapBuffSec: number = 0,
     speedBuffSec: number = 0
   ) {
-    const barW = 48;
+    const barW = 50;
     const barH = 6;
-    const barY = flip ? y - 32 - barH : y + 30;
+    const barY = flip ? y - 34 - barH : y + 30;
     const frac = Math.max(0, Math.min(1, hp / maxHp));
     const dispFrac = Math.max(0, Math.min(1, displayHp / maxHp));
 
@@ -1272,20 +1397,25 @@ export class CanvasRenderer {
       this.drawRoundedRect(ctx, x - barW / 2, barY, barW * frac, barH, 3);
       ctx.fill();
     }
-    // 25 HP tick marks
+    // 30 HP tick marks (v3.0: 120 HP = ticks at 30/60/90); larger max
+    // HP (boss 300) falls back to quarter ticks so the bar stays clean.
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
     ctx.lineWidth = 1;
-    for (const t of [0.25, 0.5, 0.75]) {
+    const tickFracs: number[] =
+      maxHp <= 150
+        ? Array.from({ length: Math.floor((maxHp - 1) / 30) }, (_, i) => ((i + 1) * 30) / maxHp)
+        : [0.25, 0.5, 0.75];
+    for (const t of tickFracs) {
       const tx = x - barW / 2 + barW * t;
       ctx.beginPath();
       ctx.moveTo(tx, barY);
       ctx.lineTo(tx, barY + barH);
       ctx.stroke();
     }
-    // Shield: white overlay on the bar
+    // Shield: white overlay on the bar (shield max 25)
     if (shield > 0) {
       ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
-      const sw = barW * Math.min(1, shield / 100);
+      const sw = barW * Math.min(1, shield / MONOCHROME_SHIELD_MAX);
       this.drawRoundedRect(ctx, x - barW / 2, barY, sw, barH, 3);
       ctx.fill();
     }
@@ -1483,7 +1613,7 @@ export class CanvasRenderer {
     const R = radius;
     const flash = !!opts.flash;
     const fill = flash ? '#FFFFFF' : color;
-    const outline = '#0B0F1A';
+    const outline = '#070A12'; // v3.0 Phase 2 Layer 2: dark 2.5px outline
 
     ctx.save();
     ctx.lineWidth = 2.5;
@@ -2010,6 +2140,22 @@ export class CanvasRenderer {
           }
           const s = p.size | 0;
           ctx.fillRect((p.x - s / 2) | 0, (p.y - s / 2) | 0, s, s);
+        } else if (p.shape === 'line') {
+          // v3.0 Phase 2: sharp straight spark — a short line streaking
+          // along its velocity (no fog, no glow blob).
+          if (p.color !== lastColor) {
+            ctx.strokeStyle = p.color;
+            lastColor = p.color;
+          }
+          const len = p.size * 1.8;
+          const mag = Math.hypot(p.vx, p.vy) || 1;
+          const dx = (p.vx / mag) * len;
+          const dy = (p.vy / mag) * len;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(p.x - dx, p.y - dy);
+          ctx.lineTo(p.x, p.y);
+          ctx.stroke();
         } else {
           // Circle / default (launch dust, glow dust): cached glow sprite.
           const sprite = ps.glowEnabled ? this.glowSprite(p.color) : null;
