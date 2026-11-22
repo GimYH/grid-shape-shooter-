@@ -26,6 +26,9 @@ export interface ScoreCtx {
   // v3.0: monochrome absorb is worth scoring only when the AI still has
   // a discard stack to spend on it (Phase 1 rule, shared with the player).
   discardStacks: number;
+  // Deadlock-Free Engine (2026-11-22): the board has no launchable red
+  // cluster, so an absorb is a free emergency rescue (no stack spent).
+  emergencyAbsorb: boolean;
   bestSwap: SwapResult | null;
   dominantColor: TileColor;
 }
@@ -106,8 +109,10 @@ function profileFactors(id: ArchetypeId, cluster: Cluster, ctx: ScoreCtx): Recor
     case 'monochrome':
       if (cluster.color === 'red') f.redCluster = 3.5;
       // Low shield: a non-red cluster is worth absorbing (+8 shield) —
-      // but only while a discard stack is left to spend on the absorb.
-      if (ctx.shield < 20 && ctx.discardStacks > 0 && cluster.color !== 'red') f.absorb = 2.2;
+      // but only while a discard stack is left to spend on the absorb,
+      // or the board is in emergency mode (no launchable red cluster:
+      // the absorb is free, so stacks do not gate it).
+      if (ctx.shield < 20 && (ctx.discardStacks > 0 || ctx.emergencyAbsorb) && cluster.color !== 'red') f.absorb = 2.2;
       break;
   }
   return f;
@@ -649,6 +654,7 @@ export class AIController {
             playerCol,
             shield: this.shield,
             discardStacks: this.discardStacks,
+            emergencyAbsorb: enemyBoard.launchableClusterCount('red') === 0,
             bestSwap,
             dominantColor: enemyBoard.getDominantColor(),
           };

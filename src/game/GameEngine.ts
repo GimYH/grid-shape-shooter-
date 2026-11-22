@@ -7,7 +7,7 @@ import { FrameDefense } from './frameDefense';
 import { CanvasRenderer } from './Renderer';
 import { soundManager } from '../audio/soundManager';
 import { ArchetypeId, Cluster, CoreState, DefeatCause, GameMode, GameStats, ShapeProjectile, ShrinkPhase, ShrinkRect, SkillEffect } from '../types/game';
-import { ARCHETYPES, DEFAULT_CORE_HP, MONOCHROME_ABSORB_COOLDOWN_SEC, MONOCHROME_ABSORB_GAIN, MONOCHROME_ABSORB_REFILL_SEC, MONOCHROME_SHIELD_MAX, SNIPER_CORE_DMG_MULT, SPEEDSTER_DASH_SPEED_MULT, SPEEDSTER_FIRE_DMG_MULT, TRANSPORTER_SWAP_DMG_MULT } from './archetypes';
+import { ARCHETYPES, DEFAULT_CORE_HP, MONOCHROME_ABSORB_COOLDOWN_SEC, MONOCHROME_ABSORB_GAIN, MONOCHROME_ABSORB_REFILL_SEC, MONOCHROME_EMERGENCY_ABSORB_REFILL_SEC, MONOCHROME_SHIELD_MAX, SNIPER_CORE_DMG_MULT, SPEEDSTER_DASH_SPEED_MULT, SPEEDSTER_FIRE_DMG_MULT, TRANSPORTER_SWAP_DMG_MULT } from './archetypes';
 import { STAGES } from './stages';
 import {
   startCampaignRun,
@@ -121,6 +121,11 @@ export const MAX_SINGLE_HIT_DMG = 30;
 // not two-shot a 300 HP core.
 // v3.0: 60 -> 55 (core default HP is 300 now).
 export const MAX_CORE_HIT_DMG = 55;
+
+// Deadlock-Free Engine (2026-11-22): a board with no launchable cluster
+// and no tile left to refill is fully stalled — after this many seconds
+// of that state, GRID RESYNC force-converts tiles near the character.
+export const DEADLOCK_RESYNC_DELAY_SEC = 0.35;
 
 // v2.2 shrink anchor clamp: the 90s safe-zone center is clamped into the
 // inner area (columns 3-7, rows 2-4, 1-indexed) so it never overlaps the
@@ -355,6 +360,10 @@ export class GameEngine {
   private shrinkDmgAcc: number = 0;
   private shrinkDmgAcc2: number = 0;
   private refillSoundTimer: number = 0;
+  // Deadlock-Free Engine (2026-11-22): per-board stall timers (game
+  // seconds). Reset whenever the board has a launchable cluster or a
+  // tile left to refill, and on every battle start (beginBattle).
+  private deadlockTimers: { player: number; enemy: number } = { player: 0, enemy: 0 };
 
   public stats: GameStats = {
     damageDealt: 0,
@@ -506,6 +515,8 @@ export class GameEngine {
     this.wasSkillReady = true;
     this.wasSkillReady2 = true;
     this.awakeningCutinShown = false;
+    // Deadlock-Free Engine (2026-11-22): a fresh board starts un-stalled.
+    this.deadlockTimers = { player: 0, enemy: 0 };
     // v3.0: a battle start drops any beam telegraph still pending.
     this.beamPending = [];
     // Optimization (2.2): each battle starts at full particle quality;
@@ -1667,6 +1678,7 @@ export class GameEngine {
         const d = action.data as {
           tiles: { col: number; row: number }[];
           shieldGain?: number;
+          emergency?: boolean;
         };
         if (!d.tiles) break;
         const mapped: Cluster = {
@@ -1680,17 +1692,30 @@ export class GameEngine {
             row: GRID_ROWS - 1 - t.row,
           })),
         };
-        this.enemyBoard.launchCluster(mapped, MONOCHROME_ABSORB_REFILL_SEC);
+        // Deadlock-Free Engine: an emergency absorb costs no stack and
+        // refills in 0.8s on the sender's side — mirror both here.
+        this.enemyBoard.launchCluster(
+          mapped,
+          d.emergency ? MONOCHROME_EMERGENCY_ABSORB_REFILL_SEC : MONOCHROME_ABSORB_REFILL_SEC
+        );
         const gain =
           typeof d.shieldGain === 'number' ? d.shieldGain : MONOCHROME_ABSORB_GAIN;
         this.player2.shield = Math.min(MONOCHROME_SHIELD_MAX, this.player2.shield + gain);
-        // v3.0: mirror the sender's 1-stack absorb cost on the remote copy.
-        this.player2.discardStacks = Math.max(0, this.player2.discardStacks - 1);
+        // v3.0: mirror the sender's 1-stack absorb cost on the remote copy
+        // (an emergency absorb spends no stack, so the mirror must not
+        // decrement either).
+        if (!d.emergency) {
+          this.player2.discardStacks = Math.max(0, this.player2.discardStacks - 1);
+        }
         this.particleSystem.addFloatingText(
           this.player2.x,
           this.player2.y - 30,
-          gain > 0 ? `+${gain} SHIELD ABSORBED!` : 'ABSORB COOLDOWN',
-          '#33CCFF',
+          d.emergency
+            ? 'EMERGENCY ABSORB!'
+            : gain > 0
+              ? `+${gain} SHIELD ABSORBED!`
+              : 'ABSORB COOLDOWN',
+          d.emergency ? '#FFFFFF' : '#33CCFF',
           16
         );
         break;
@@ -2000,34 +2025,51 @@ export class GameEngine {
     // absorb is blocked with rejection feedback (nothing evaporates).
     // The stack is spent whenever the absorb executes — a cooldown absorb
     // evaporates tiles too, just with no shield gain.
+    // Deadlock-Free Engine (2026-11-22): when the board has no
+    // launchable red cluster at all, the absorb is a free emergency
+    // rescue — no discard stack, no shield, 0.8s refill. The internal
+    // cooldown is a *shield-gain* cooldown, so it does not apply here
+    // (nothing is gained); the 0.8s refill is the throttle against
+    // repeated free absorbs.
     if (actor.archetypeId === 'monochrome' && cluster.color !== 'red') {
-      if (actor.discardStacks <= 0) {
+      const emergency = board.launchableClusterCount('red') === 0;
+      if (!emergency && actor.discardStacks <= 0) {
         if (!fromBuffer) {
           this.rejectActionFeedback('discard', playerNum);
           this.particleSystem.addFloatingText(actor.x, actor.y - 30, 'NO DISCARD STACK!', '#94A3B8', 15);
         }
         return false;
       }
-      actor.discardStacks -= 1;
-      const shieldGain =
-        actor.absorbCooldownRemaining <= 0 ? MONOCHROME_ABSORB_GAIN : 0;
-      if (shieldGain > 0) {
-        actor.absorbCooldownRemaining = MONOCHROME_ABSORB_COOLDOWN_SEC;
+      let shieldGain = 0;
+      let refillSec = MONOCHROME_EMERGENCY_ABSORB_REFILL_SEC;
+      if (!emergency) {
+        actor.discardStacks -= 1;
+        shieldGain =
+          actor.absorbCooldownRemaining <= 0 ? MONOCHROME_ABSORB_GAIN : 0;
+        if (shieldGain > 0) {
+          actor.absorbCooldownRemaining = MONOCHROME_ABSORB_COOLDOWN_SEC;
+        }
+        refillSec = MONOCHROME_ABSORB_REFILL_SEC;
       }
       if (this.isOnline && broadcast && playerNum === 1) {
         networkManager.sendAction('absorb', {
           tiles: cluster.tiles.map((t) => ({ col: t.col, row: t.row })),
           shieldGain,
+          emergency,
         });
       }
-      board.launchCluster(cluster, MONOCHROME_ABSORB_REFILL_SEC);
+      board.launchCluster(cluster, refillSec);
       actor.shield = Math.min(MONOCHROME_SHIELD_MAX, actor.shield + shieldGain);
       soundManager.playSkill('monochrome');
       this.particleSystem.addFloatingText(
         actor.x,
         actor.y - 30,
-        shieldGain > 0 ? `+${shieldGain} SHIELD ABSORBED!` : 'ABSORB COOLDOWN',
-        '#33CCFF',
+        emergency
+          ? 'EMERGENCY ABSORB!'
+          : shieldGain > 0
+            ? `+${shieldGain} SHIELD ABSORBED!`
+            : 'ABSORB COOLDOWN',
+        emergency ? '#FFFFFF' : '#33CCFF',
         16
       );
       this.particleSystem.addShockwave(actor.x, actor.y, 70, '#33CCFF');
@@ -2307,24 +2349,38 @@ export class GameEngine {
     // v3.0: the absorb costs 1 shared discard stack (same rule as the
     // player). With 0 stacks the absorb is blocked and the cluster
     // launches as a normal projectile instead of evaporating.
-    if (aiArchs.includes('monochrome') && cluster.color !== 'red' && !bypass && this.enemy.discardStacks > 0) {
+    // Deadlock-Free Engine (2026-11-22): when the enemy board has no
+    // launchable red cluster at all, the absorb is a free emergency
+    // rescue — no stack, no shield, 0.8s refill (same rule as the
+    // player; the internal cooldown does not apply — nothing is gained).
+    const aiEmergency = this.enemyBoard.launchableClusterCount('red') === 0;
+    if (aiArchs.includes('monochrome') && cluster.color !== 'red' && !bypass && (this.enemy.discardStacks > 0 || aiEmergency)) {
       // Hotfix (2026-11-21): same absorb nerf as the player — 1.0s refill,
       // +8 shield, 2.0s internal cooldown on the gain. The stack is spent
       // whenever the absorb executes, even during the cooldown.
-      this.enemy.discardStacks -= 1;
-      const shieldGain =
-        this.enemy.absorbCooldownRemaining <= 0 ? MONOCHROME_ABSORB_GAIN : 0;
-      if (shieldGain > 0) {
-        this.enemy.absorbCooldownRemaining = MONOCHROME_ABSORB_COOLDOWN_SEC;
+      let shieldGain = 0;
+      let refillSec = MONOCHROME_EMERGENCY_ABSORB_REFILL_SEC;
+      if (!aiEmergency) {
+        this.enemy.discardStacks -= 1;
+        shieldGain =
+          this.enemy.absorbCooldownRemaining <= 0 ? MONOCHROME_ABSORB_GAIN : 0;
+        if (shieldGain > 0) {
+          this.enemy.absorbCooldownRemaining = MONOCHROME_ABSORB_COOLDOWN_SEC;
+        }
+        refillSec = MONOCHROME_ABSORB_REFILL_SEC;
       }
-      this.enemyBoard.launchCluster(cluster, MONOCHROME_ABSORB_REFILL_SEC);
+      this.enemyBoard.launchCluster(cluster, refillSec);
       this.enemy.shield = Math.min(MONOCHROME_SHIELD_MAX, this.enemy.shield + shieldGain);
       soundManager.playSkill('monochrome');
       this.particleSystem.addFloatingText(
         this.enemy.x,
         this.enemy.y - 30,
-        shieldGain > 0 ? `+${shieldGain} SHIELD ABSORBED!` : 'ABSORB COOLDOWN',
-        '#33CCFF',
+        aiEmergency
+          ? 'EMERGENCY ABSORB!'
+          : shieldGain > 0
+            ? `+${shieldGain} SHIELD ABSORBED!`
+            : 'ABSORB COOLDOWN',
+        aiEmergency ? '#FFFFFF' : '#33CCFF',
         16
       );
       this.particleSystem.addShockwave(this.enemy.x, this.enemy.y, 70, '#33CCFF');
@@ -2521,6 +2577,52 @@ export class GameEngine {
     }
   }
 
+  // Deadlock-Free Engine (GRID RESYNC): one board's stall watch. The
+  // timer advances only while the board has no launchable cluster AND
+  // no tile left to refill; any break in that state resets it. At
+  // 0.35s the board force-converts tiles near the character
+  // (resolveDeadlock) and the conversion gets white sparks, a RESYNC
+  // popup and a bright chime. `actor` only needs a board position —
+  // PlayerCharacter and AIController both carry currentCol/currentRow.
+  private checkDeadlock(
+    board: GridBoard,
+    actor: { currentCol: number; currentRow: number } | null,
+    originX: number,
+    originY: number,
+    dt: number,
+    side: 'player' | 'enemy'
+  ) {
+    if (
+      !actor ||
+      board.launchableClusterCount() > 0 ||
+      board.pendingRefillCount() > 0
+    ) {
+      this.deadlockTimers[side] = 0;
+      return;
+    }
+    this.deadlockTimers[side] += dt;
+    if (this.deadlockTimers[side] < DEADLOCK_RESYNC_DELAY_SEC) return;
+    this.deadlockTimers[side] = 0;
+    const changed = board.resolveDeadlock(actor.currentCol, actor.currentRow);
+    if (changed.length === 0) return;
+    const stepX = this.renderer.cellW + this.renderer.gap;
+    const stepY = this.renderer.cellH + this.renderer.gap;
+    for (const t of changed) {
+      const cx = originX + t.col * stepX + this.renderer.cellW / 2;
+      const cy = originY + t.row * stepY + this.renderer.cellH / 2;
+      this.particleSystem.emitBlockDestruction(cx, cy, '#FFFFFF', 8);
+    }
+    const first = changed[0];
+    this.particleSystem.addFloatingText(
+      originX + first.col * stepX + this.renderer.cellW / 2,
+      originY + first.row * stepY - 10,
+      'RESYNC',
+      '#FFFFFF',
+      15
+    );
+    soundManager.playSkillReady();
+  }
+
   private update(dt: number) {
     this.gameTime += dt;
     // Result-screen BATTLE TIME is wall-clock match time (see
@@ -2690,6 +2792,24 @@ export class GameEngine {
     if ((playerRefilled || enemyRefilled) && this.refillSoundTimer <= 0) {
       this.refillSoundTimer = 0.05;
       soundManager.playRefill();
+    }
+
+    // Deadlock-Free Engine (GRID RESYNC): a board with no launchable
+    // cluster and no tile left to refill is fully stalled — after 0.35s
+    // of that state, force-convert tiles near the character so a 3+
+    // cluster appears. Runs only while playing (update() is frozen
+    // during hitstop, so the timer pauses there by construction).
+    // Online, only my own board is checked: the remote side resyncs its
+    // own board, and my mirror of it heals through the board-hash
+    // reconciliation (a local resync of the mirror would desync it).
+    if (this.status === 'playing') {
+      this.checkDeadlock(this.playerBoard, this.player, this.renderer.playerOriginX, this.renderer.playerOriginY, dt, 'player');
+      if (!this.isOnline && this.mode !== 'royale' && !this.isArcade) {
+        const enemyActor = this.mode === 'multi' ? this.player2 : this.enemy;
+        if (enemyActor) {
+          this.checkDeadlock(this.enemyBoard, enemyActor, this.renderer.enemyOriginX, this.renderer.enemyOriginY, dt, 'enemy');
+        }
+      }
     }
 
     // Player Movement & Online Position Sync

@@ -35,6 +35,13 @@ export const MONOCHROME_SHIELD_MAX = 25;
 export const MONOCHROME_ABSORB_GAIN = 8;
 export const MONOCHROME_ABSORB_REFILL_SEC = 1.0;
 export const MONOCHROME_ABSORB_COOLDOWN_SEC = 2.0;
+// Deadlock-Free Engine (2026-11-22): emergency absorb — when the board
+// has no launchable red cluster at all, a monochrome absorb costs no
+// discard stack and grants no shield. Faster refill (0.8s) keeps the
+// board moving; the internal cooldown is a *shield-gain* cooldown, so
+// it does not apply here (nothing is gained) and the 0.8s refill is the
+// throttle against repeated free absorbs.
+export const MONOCHROME_EMERGENCY_ABSORB_REFILL_SEC = 0.8;
 export const MONOCHROME_BLUE_CLASH_TAKEN_MULT = 1.5;
 export const WAVE_WALL_CELL_HP_BONUS = 1;
 export const TRANSPORTER_SWAP_BUFF_SEC = 1.5;
