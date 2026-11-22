@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo } from 'react';
 import { Play, Sparkles, Swords, Zap, Code2, Crown, Users, Globe, Timer, Shield, Gamepad2 } from 'lucide-react';
-import { GameMode } from '../types/game';
+import { GameMode, ArchetypeId } from '../types/game';
 import { ARCADE_MODE_META, ArcadeModeId, formatArcadeTime, loadArcadeRecords } from '../game/arcade';
+import { loadCampaignProgress } from '../game/campaign';
+import { ARCHETYPES } from '../game/archetypes';
 import arenaBanner from '../assets/images/cyber_arena_banner_1794503925161.jpg';
 
 interface TitleScreenProps {
   onSelectMode: (mode: GameMode) => void;
+  onQuickSingle: (stage: number, archetype: ArchetypeId) => void;
   onSelectArcade: (mode: ArcadeModeId) => void;
   onOpenOnlineModal: () => void;
   onOpenRoyaleModal: () => void;
@@ -14,11 +17,23 @@ interface TitleScreenProps {
 
 export const TitleScreen: React.FC<TitleScreenProps> = ({
   onSelectMode,
+  onQuickSingle,
   onSelectArcade,
   onOpenOnlineModal,
   onOpenRoyaleModal,
   onOpenGodotModal,
 }) => {
+  // v3.0 Phase 2: one-click quick entry — last single stage + archetype.
+  const quick = useMemo(() => {
+    const p = loadCampaignProgress();
+    if (p.lastStage && p.lastArchetype) {
+      return { stage: p.lastStage, archetype: p.lastArchetype };
+    }
+    if (p.maxCleared > 0) {
+      return { stage: Math.min(30, p.maxCleared + 1), archetype: 'lancer' as ArchetypeId };
+    }
+    return null;
+  }, []);
   // 아케이드 BEST 기록 (이 기기 localStorage 기준).
   const arcadeRecords = useMemo(() => loadArcadeRecords(), []);
   const arcadeBest = (id: ArcadeModeId): string => {
@@ -133,6 +148,19 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
         <p className="text-slate-300 text-xs sm:text-sm max-w-lg leading-relaxed mb-6">
           3칸 이상 연결된 발판을 밟고 거대 형상 투사체를 사출하세요. 대시(Shift)로 적의 탄환을 회피하고, 패가 꼬였을 땐 디스카드(X/E) 3스택 탄창으로 바닥을 리로드하여 승리하세요!
         </p>
+
+        {/* v3.0 Phase 2: one-click quick entry (last stage + archetype) */}
+        {quick && (
+          <button
+            onClick={() => onQuickSingle(quick.stage, quick.archetype)}
+            className="mb-4 px-5 py-2.5 rounded-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-sm flex items-center gap-2 transition-all hover:scale-105 active:scale-95 cursor-pointer shadow-lg shadow-cyan-500/30"
+          >
+            <Play className="w-4 h-4 fill-slate-950/30" />
+            <span>
+              이어하기 · STAGE {quick.stage} · {ARCHETYPES[quick.archetype]?.nameKo ?? quick.archetype}
+            </span>
+          </button>
+        )}
 
         {/* 5 Core Game Modes Grid (Local 2P restored, GRID ROYALE v2.4) */}
         <div className="grid grid-cols-1 sm:grid-cols-5 gap-3.5 w-full max-w-4xl mb-6">

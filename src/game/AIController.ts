@@ -4,7 +4,7 @@ import { ParticleSystem } from './ParticleSystem';
 import { soundManager } from '../audio/soundManager';
 import { STAGES, aiLevelStats } from './stages';
 import { AiLevel } from '../types/game';
-import { ARCHETYPES, SPEEDSTER_FIRE_BUFF_SEC, TRANSPORTER_SWAP_BUFF_SEC } from './archetypes';
+import { ARCHETYPES, DEFAULT_PLAYER_HP, MONOCHROME_SELF_DAMAGE, SPEEDSTER_FIRE_BUFF_SEC, TRANSPORTER_SWAP_BUFF_SEC } from './archetypes';
 
 // ---------------------------------------------------------------------------
 // v2.3 utility AI: per-archetype weight profiles + smart skill triggers +
@@ -23,6 +23,9 @@ export interface ScoreCtx {
   board: GridBoard;
   playerCol: number;
   shield: number;
+  // v3.0: monochrome absorb is worth scoring only when the AI still has
+  // a discard stack to spend on it (Phase 1 rule, shared with the player).
+  discardStacks: number;
   bestSwap: SwapResult | null;
   dominantColor: TileColor;
 }
@@ -31,6 +34,8 @@ export interface SkillTriggerCtx {
   board: GridBoard;
   aiCol: number;
   aiRow: number;
+  // v3.0: monochrome overdrive fires only while the caster is above 30 HP.
+  hp: number;
   playerCol: number;
   incoming: ShapeProjectile[];
   boardOriginX: number;
@@ -70,16 +75,20 @@ function profileFactors(id: ArchetypeId, cluster: Cluster, ctx: ScoreCtx): Recor
       if (cluster.color === 'blue') f.blue = 2.0;
       break;
     case 'sniper':
-      if (n <= 2) f.quick = 2.0;
+      if (n <= 2) f.quick = 1.8;
       if (cols.has(ctx.playerCol)) f.align = 2.5;
       break;
     case 'painter':
       if (cluster.color === ctx.dominantColor) f.dense = 2.5;
-      if (n >= 6) f.big = 3.0;
+      if (n >= 5) f.big = 3.0;
       break;
     case 'transporter':
+      // v3.0: the swap bonus counts only when the swap completes a 4+
+      // cluster. A launch down a side lane (cols 0-1 / 7-8) also triggers
+      // the Phase 1 disruption lane, so side clusters score x1.5.
       if (
         ctx.bestSwap &&
+        ctx.bestSwap.size >= 4 &&
         tiles.some(
           (t) =>
             (t.col === ctx.bestSwap!.a.col && t.row === ctx.bestSwap!.a.row) ||
@@ -88,6 +97,7 @@ function profileFactors(id: ArchetypeId, cluster: Cluster, ctx: ScoreCtx): Recor
       ) {
         f.swap = 3.0;
       }
+      if ([...cols].some((c) => c <= 1 || c >= 7)) f.side = 1.5;
       break;
     case 'speedster':
       if (cluster.color === 'yellow') f.yellow = 2.0;
@@ -95,8 +105,9 @@ function profileFactors(id: ArchetypeId, cluster: Cluster, ctx: ScoreCtx): Recor
       break;
     case 'monochrome':
       if (cluster.color === 'red') f.redCluster = 3.5;
-      // Low shield: a non-red cluster is worth absorbing (+8 shield).
-      if (ctx.shield < 20 && cluster.color !== 'red') f.absorb = 2.5;
+      // Low shield: a non-red cluster is worth absorbing (+8 shield) —
+      // but only while a discard stack is left to spend on the absorb.
+      if (ctx.shield < 20 && ctx.discardStacks > 0 && cluster.color !== 'red') f.absorb = 2.2;
       break;
   }
   return f;
@@ -199,8 +210,8 @@ export function checkSkillTrigger(id: ArchetypeId, ctx: SkillTriggerCtx): boolea
   const { board } = ctx;
   switch (id) {
     case 'lancer': {
-      // Current column has 2+ non-red tiles, and converting 2 of them
-      // (mirroring convertColumnToRed: first 2 unlocked tiles, top-down)
+      // Current column has 3+ non-red tiles, and converting 3 of them
+      // (mirroring convertColumnToRed: first 3 unlocked tiles, top-down)
       // would make a vertical run of 3+ red.
       const col = ctx.aiCol;
       let nonRed = 0;
@@ -208,10 +219,10 @@ export function checkSkillTrigger(id: ArchetypeId, ctx: SkillTriggerCtx): boolea
         if (board.isTileLocked(col, r)) continue;
         if (board.tiles[r]?.[col]?.color !== 'red') nonRed++;
       }
-      if (nonRed < 2) return false;
+      if (nonRed < 3) return false;
       const sim = colorGridOf(board);
       let converted = 0;
-      for (let r = 0; r < GRID_ROWS && converted < 2; r++) {
+      for (let r = 0; r < GRID_ROWS && converted < 3; r++) {
         if (board.isTileLocked(col, r)) continue;
         sim[r][col] = 'red';
         converted++;
@@ -219,13 +230,13 @@ export function checkSkillTrigger(id: ArchetypeId, ctx: SkillTriggerCtx): boolea
       return maxConsecutiveInColumn(sim, col, 'red') >= 3;
     }
     case 'wave': {
-      // 3+ cooldown (empty) tiles in the current row.
+      // v3.0: 2+ cooldown (empty) tiles in the current row.
       let empty = 0;
       for (let c = 0; c < GRID_COLS; c++) {
         if (board.isTileLocked(c, ctx.aiRow)) continue;
         if (board.tiles[ctx.aiRow]?.[c]?.color === null) empty++;
       }
-      return empty >= 3;
+      return empty >= 2;
     }
     case 'sniper': {
       // Aligned with the player in the same column, or the player is in
@@ -234,33 +245,43 @@ export function checkSkillTrigger(id: ArchetypeId, ctx: SkillTriggerCtx): boolea
       return ctx.playerCol === ctx.aiCol || (ctx.playerCol >= 2 && ctx.playerCol <= 6);
     }
     case 'painter': {
-      // Painting the foot cross to the dominant color would complete a
-      // 5+ cluster.
-      const dominant = board.getDominantColor();
+      // Painting up to 3 tiles adjacent to the feet with the foot tile's
+      // color (mirroring paintAdjacentFromFoot: up, down, left, right,
+      // first 3 active tiles; dominant color when the foot tile is empty)
+      // would complete a 5+ cluster.
+      const footColor = board.tiles[ctx.aiRow]?.[ctx.aiCol]?.color ?? board.getDominantColor();
       const sim = colorGridOf(board);
-      const cross: [number, number][] = [
-        [ctx.aiCol, ctx.aiRow],
-        [ctx.aiCol - 1, ctx.aiRow],
-        [ctx.aiCol + 1, ctx.aiRow],
+      const neighbors: [number, number][] = [
         [ctx.aiCol, ctx.aiRow - 1],
         [ctx.aiCol, ctx.aiRow + 1],
+        [ctx.aiCol - 1, ctx.aiRow],
+        [ctx.aiCol + 1, ctx.aiRow],
       ];
-      for (const [c, r] of cross) {
+      const paintedCells: [number, number][] = [];
+      for (const [c, r] of neighbors) {
+        if (paintedCells.length >= 3) break;
         if (c < 0 || c >= GRID_COLS || r < 0 || r >= GRID_ROWS) continue;
         if (board.isTileLocked(c, r)) continue;
-        sim[r][c] = dominant;
+        if (!board.tiles[r]?.[c]?.color) continue;
+        sim[r][c] = footColor;
+        paintedCells.push([c, r]);
       }
-      return clusterSizeAt(sim, ctx.aiCol, ctx.aiRow) >= 5;
+      // The foot tile itself is not painted; measure from the painted
+      // neighbors (and the foot, when it already has the foot color).
+      return (
+        paintedCells.some(([c, r]) => clusterSizeAt(sim, c, r) >= 5) ||
+        clusterSizeAt(sim, ctx.aiCol, ctx.aiRow) >= 5
+      );
     }
     case 'transporter': {
       return !!ctx.bestSwap && ctx.bestSwap.size >= 5;
     }
     case 'speedster': {
-      // A 6+ cell projectile or a beam is closing in on my column.
+      // v3.0: a 5+ cell projectile or a beam is closing in on my column.
       return ctx.incoming.some((p) => {
         if (p.owner !== 'player') return false;
         const isBeam = p.archetypeId === 'sniper' && p.cells.length <= 1;
-        if (!isBeam && p.cells.length < 6) return false;
+        if (!isBeam && p.cells.length < 5) return false;
         const step = ctx.cellW + ctx.gap;
         for (const cell of p.cells) {
           if (cell.destroyed) continue;
@@ -272,24 +293,18 @@ export function checkSkillTrigger(id: ArchetypeId, ctx: SkillTriggerCtx): boolea
       });
     }
     case 'monochrome': {
-      // A launchable red cluster of 5+, or red is scarce on the board.
-      const redClusters = board.clusters.filter((c) => c.isActivePad && c.color === 'red');
-      if (redClusters.some((c) => c.tiles.length >= 5)) return true;
-      let redTiles = 0;
-      for (let r = 0; r < GRID_ROWS; r++) {
-        for (let c = 0; c < GRID_COLS; c++) {
-          if (board.tiles[r]?.[c]?.color === 'red') redTiles++;
-        }
-      }
-      return redTiles <= 6;
+      // v3.0: Blood Overdrive fires only while the caster is above 30 HP
+      // (the cast costs 6 HP of self-damage, so the gate keeps the AI
+      // from overdriving itself into danger).
+      return ctx.hp > 30;
     }
   }
 }
 
-// Final boss skill cadence base (seconds): 3.5s in phase 1, 2.2s awakened.
+// Final boss skill cadence base (seconds): 3.5s in phase 1, 2.3s awakened.
 // The controller adds +0~1.0s of randomness on top.
 export function bossSkillIntervalBase(awakened: boolean): number {
-  return awakened ? 2.2 : 3.5;
+  return awakened ? 2.3 : 3.5;
 }
 
 export const BOSS_SKILL_ORDER = ['crimson', 'tide', 'beam', 'chroma', 'overdrive', 'rewrite', 'blink'] as const;
@@ -307,10 +322,12 @@ export class AIController {
   public y: number = 0;
   public radius: number = 22;
 
-  public hp: number = 100;
-  public maxHp: number = 100;
+  // v3.0: field defaults are the default character HP (120); setStage
+  // overrides them with the stage values in campaign/boss mode.
+  public hp: number = DEFAULT_PLAYER_HP;
+  public maxHp: number = DEFAULT_PLAYER_HP;
   // v2.2 Phase 2: diegetic HP bar residual (see PlayerCharacter.displayHp).
-  public displayHp: number = 100;
+  public displayHp: number = DEFAULT_PLAYER_HP;
   // Monochrome absorb shield (mirrors the player rule: +8 per absorbed
   // non-red cluster, cap MONOCHROME_SHIELD_MAX, 2.0s internal cooldown).
   public shield: number = 0;
@@ -322,6 +339,11 @@ export class AIController {
   // the 1.5s fire buff; GameEngine consumes them on the AI's next launch.
   public swapBuffRemaining: number = 0;
   public speedBuffRemaining: number = 0;
+  // v3.0: the AI's shared discard stacks (mirrors the player rule:
+  // monochrome absorbs cost 1 stack; 0 stacks blocks the absorb).
+  // Recharge is 1.2s per stack, same as PlayerCharacter.
+  public discardStacks: number = 3;
+  private discardRecharge: number = 0;
   public currentCol: number = 4;
   public currentRow: number = 1;
 
@@ -400,6 +422,8 @@ export class AIController {
     this.skillCooldowns = {};
     this.swapBuffRemaining = 0;
     this.speedBuffRemaining = 0;
+    this.discardStacks = 3;
+    this.discardRecharge = 0;
     this.bypassAbsorb = false;
     this.coreCrisis = false;
 
@@ -414,7 +438,7 @@ export class AIController {
     }
   }
 
-  // Final boss awakening: HP 50% (125) or core HP 50% (200) reached.
+  // Final boss awakening: HP 50% (150) or core HP 50% (250) reached.
   // Returns true only on the frame it triggers.
   public checkAwakening(particleSystem?: ParticleSystem): boolean {
     if (!this.isFinalBoss || this.awakened) return false;
@@ -470,6 +494,17 @@ export class AIController {
     // Hotfix (2026-11-21): monochrome absorb internal cooldown.
     if (this.absorbCooldownRemaining > 0) {
       this.absorbCooldownRemaining = Math.max(0, this.absorbCooldownRemaining - dt);
+    }
+    // v3.0: shared discard stacks recharge 1.2s per stack (same rule as
+    // PlayerCharacter) so the AI can absorb again after spending stacks.
+    if (this.discardStacks < 3) {
+      this.discardRecharge += dt;
+      if (this.discardRecharge >= 1.2) {
+        this.discardRecharge -= 1.2;
+        this.discardStacks = Math.min(3, this.discardStacks + 1);
+      }
+    } else {
+      this.discardRecharge = 0;
     }
 
     const colStep = cellW + gap;
@@ -542,8 +577,8 @@ export class AIController {
       this.threatenedCols = threatenedCols;
 
       const centerTile = () => ({
-        col: 3 + Math.floor(Math.random() * 3),
-        row: 1 + Math.floor(Math.random() * 2),
+        col: 2 + Math.floor(Math.random() * 5),
+        row: 1 + Math.floor(Math.random() * 3),
       });
 
       const hasWave = this.archetypes.includes('wave');
@@ -554,10 +589,10 @@ export class AIController {
 
       // Priority 1 — 80-90s shrink warning: head for the center area so
       // the AI is not isolated in a corner when the symmetric zone closes
-      // in (center cols 4-6, rows 2-4, 1-indexed).
+      // in (v3.0 central safe zone: cols 3-7, rows 2-4, 1-indexed).
       if (
         this.moveToCenter &&
-        (this.currentCol < 3 || this.currentCol > 5 || this.currentRow < 1 || this.currentRow > 2)
+        (this.currentCol < 2 || this.currentCol > 6 || this.currentRow < 1 || this.currentRow > 3)
       ) {
         this.targetTile = centerTile();
         decided = true;
@@ -613,6 +648,7 @@ export class AIController {
             board: enemyBoard,
             playerCol,
             shield: this.shield,
+            discardStacks: this.discardStacks,
             bestSwap,
             dominantColor: enemyBoard.getDominantColor(),
           };
@@ -655,6 +691,7 @@ export class AIController {
           board: enemyBoard,
           aiCol: this.currentCol,
           aiRow: this.currentRow,
+          hp: this.hp,
           playerCol,
           incoming: incomingProjectiles,
           boardOriginX,
@@ -742,13 +779,17 @@ export class AIController {
     soundManager.playSkill(id);
     switch (id) {
       case 'lancer': {
-        enemyBoard.convertColumnToRed(this.currentCol, 2);
+        // v3.0: convert up to 3 active tiles in the current column to red
+        // (was 2).
+        enemyBoard.convertColumnToRed(this.currentCol, 3);
         particleSystem.addFloatingText(this.x, this.y - 30, 'CRIMSON LANCE!', '#FF3366', 16);
         particleSystem.addShockwave(this.x, this.y, 80, '#FF3366');
         return true;
       }
       case 'wave': {
-        enemyBoard.refillRow(this.currentRow);
+        // v3.0: refill up to 3 empty tiles in the current row with blue
+        // (was: refill every cooldown tile in the row).
+        enemyBoard.refillRowBlue(this.currentRow, 3);
         particleSystem.addFloatingText(this.x, this.y - 30, 'TIDE SURGE!', '#33CCFF', 16);
         particleSystem.addShockwave(this.x, this.y, 100, '#33CCFF');
         return true;
@@ -760,7 +801,9 @@ export class AIController {
         return true;
       }
       case 'painter': {
-        enemyBoard.paintAdjacentDominant(this.currentCol, this.currentRow);
+        // v3.0: paint up to 3 active tiles adjacent to the feet with the
+        // foot tile's color (was: paint the cross to the dominant color).
+        enemyBoard.paintAdjacentFromFoot(this.currentCol, this.currentRow, 3);
         particleSystem.addFloatingText(this.x, this.y - 30, 'CHROMA INFUSION!', '#FF8800', 16);
         particleSystem.addShockwave(this.x, this.y, 90, '#FF8800');
         return true;
@@ -783,6 +826,12 @@ export class AIController {
       case 'monochrome': {
         enemyBoard.convertRandomToRed(3);
         this.overdriveActive = true;
+        // v3.0: casting Blood Overdrive costs 6 HP — unless the caster
+        // is at 10 HP or less, in which case no HP is spent (same rule
+        // as the player skill).
+        if (this.hp > 10) {
+          this.hp = Math.max(0, this.hp - MONOCHROME_SELF_DAMAGE);
+        }
         particleSystem.addFloatingText(this.x, this.y - 30, 'BLOOD OVERDRIVE!', '#FF0033', 18);
         particleSystem.addShockwave(this.x, this.y, 120, '#FF0033');
         return true;
@@ -821,9 +870,9 @@ export class AIController {
       tile.cooldownMax = 0;
       tile.color = 'yellow';
     }
-    // v2.2 balance: a blink (speedster skill or boss PHASE BLINK) arms
-    // the 1.5s fire buff — first launch after the blink gets +15% speed
-    // and +15% damage.
+    // v3.0: a blink (speedster skill or boss PHASE BLINK) arms the 1.5s
+    // damage buff — the first 3+ cluster launch after the blink deals
+    // +20% damage (was +15% speed and +15% damage on any launch).
     this.speedBuffRemaining = SPEEDSTER_FIRE_BUFF_SEC;
     particleSystem.addFloatingText(this.x, this.y - 30, 'BLINK CHARGE!', '#FFCC00', 16);
     particleSystem.addShockwave(this.x, this.y, 110, '#FFCC00');
@@ -878,10 +927,10 @@ export class AIController {
       }
       case 'rewrite': {
         // QUANTUM REWRITE: force-swap tiles of the dominant color to
-        // complete a 6+ cluster at once. Fallback: the best swap of any
-        // color (still a rewrite, just under 6).
+        // complete a 5+ cluster at once. Fallback: the best swap of any
+        // color (still a rewrite, just under 5).
         const dominant = enemyBoard.getDominantColor();
-        const swap = findBestSwap(enemyBoard, 6, dominant) ?? findBestSwap(enemyBoard, 1);
+        const swap = findBestSwap(enemyBoard, 5, dominant) ?? findBestSwap(enemyBoard, 1);
         if (swap) {
           enemyBoard.swapTiles(swap.a.col, swap.a.row, swap.b.col, swap.b.row);
           particleSystem.addFloatingText(this.x, this.y + 35, 'BOSS: QUANTUM REWRITE!', '#B57EDC', 18);

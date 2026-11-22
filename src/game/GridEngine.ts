@@ -4,6 +4,10 @@ export const GRID_COLS = 9;
 export const GRID_ROWS = 5;
 export const BASE_REFILL_TIME = 1.3;
 export const DISCARD_REFILL_TIME = 0.45;
+// v3.0 side disruption lane: a projectile that passes the enemy board in
+// a side column destroys the rearmost active tile there; the tile refills
+// after this cooldown.
+export const DISRUPT_REFILL_TIME = 1.5;
 
 export const TILE_COLORS: TileColor[] = ['red', 'blue', 'yellow'];
 
@@ -35,6 +39,10 @@ export class GridBoard {
   public collapsed: boolean = false;
   // v2.2 shrink zone: tiles covered by the closing wall lock individually.
   private shrinkLocked: boolean[][] = [];
+  // v3.0 Pity Guard (교착 방지): the board has no 3+ cluster right now,
+  // so the next refilled tile is forced to match an adjacent 2-cluster's
+  // color. Set by updateClusters(), consumed by update().
+  public pityArmed: boolean = false;
 
   constructor(owner: 'player' | 'enemy', seed?: number) {
     this.owner = owner;
@@ -191,7 +199,20 @@ export class GridBoard {
           tile.cooldownRemaining -= dt * cooldownSpeedMult;
           if (tile.cooldownRemaining <= 0) {
             tile.cooldownRemaining = 0;
-            tile.color = this.rollRefillColor(c, r, () => this.nextRandom());
+            // v3.0 Pity Guard: when armed, the next refilled tile takes
+            // the color of an adjacent 2-tile cluster (if any) instead of
+            // rolling — a forced 3-cluster seed. The pity stays armed
+            // when no adjacent 2-cluster exists (normal roll instead).
+            // Deterministic from the board state (last computed clusters),
+            // so both online clients agree without extra packets, and no
+            // seeded RNG draw is consumed on a forced refill.
+            const pity = this.pityArmed ? this.pityColorFor(c, r) : null;
+            if (pity) {
+              tile.color = pity;
+              this.pityArmed = false;
+            } else {
+              tile.color = this.rollRefillColor(c, r, () => this.nextRandom());
+            }
             hasRefilled = true;
           }
         }
@@ -282,6 +303,50 @@ export class GridBoard {
     }
 
     this.clusters = newClusters;
+    // v3.0 Pity Guard (교착 방지): when the whole board has no 3+ cluster,
+    // arm the forced refill for the next refilled tile. Disarms itself as
+    // soon as a 3+ cluster exists again.
+    this.pityArmed = !newClusters.some((c) => c.tiles.length >= 3);
+  }
+
+  // Pity color for a refilling tile: the color of an adjacent 2-tile
+  // cluster, if one touches this tile (order: up, right, down, left).
+  // Null when no adjacent 2-cluster exists. Reads the last computed
+  // clusters — the board has not changed since the previous update().
+  public pityColorFor(col: number, row: number): TileColor | null {
+    const dirs = [[0, -1], [1, 0], [0, 1], [-1, 0]] as const;
+    for (const [dc, dr] of dirs) {
+      const nc = col + dc;
+      const nr = row + dr;
+      if (nc < 0 || nc >= GRID_COLS || nr < 0 || nr >= GRID_ROWS) continue;
+      const neighbor = this.tiles[nr][nc];
+      if (!neighbor.color) continue;
+      const cl = this.clusters.find((c) =>
+        c.tiles.some((t) => t.col === nc && t.row === nr)
+      );
+      if (cl && cl.tiles.length === 2) return cl.color;
+    }
+    return null;
+  }
+
+  // v3.0 side disruption lane: destroy the rearmost ACTIVE tile in a side
+  // column (farthest from the attacker — top row for the enemy board,
+  // bottom row for the player board) and put it on a 1.5s refill
+  // cooldown. Returns false when the column has no active tile to destroy
+  // (the passing cell then simply flies on).
+  public destroyBackTile(col: number, backSide: 'top' | 'bottom'): boolean {
+    if (col < 0 || col >= GRID_COLS) return false;
+    const rows = backSide === 'top' ? [0, 1, 2, 3, 4] : [4, 3, 2, 1, 0];
+    for (const r of rows) {
+      const tile = this.tiles[r][col];
+      if (tile.color && this.isTileActive(col, r)) {
+        tile.color = null;
+        tile.cooldownRemaining = DISRUPT_REFILL_TIME;
+        tile.cooldownMax = DISRUPT_REFILL_TIME;
+        return true;
+      }
+    }
+    return false;
   }
 
   // Find which cluster contains (col, row)
@@ -417,6 +482,24 @@ export class GridBoard {
     }
   }
 
+  // v3.0 Wave skill (Tide Surge): refill up to maxCount cooldown (empty)
+  // tiles in the row with BLUE, left to right. Returns the refilled tiles
+  // in the same shape as refillRow() — the sender carries them in the
+  // skill packet (SkillEffect 'wave') and the remote side applies them
+  // verbatim with refillRowWith().
+  public refillRowBlue(row: number, maxCount: number = 3): { col: number; row: number; color: TileColor }[] {
+    if (row < 0 || row >= GRID_ROWS) return [];
+    const picks: { col: number; row: number; color: TileColor }[] = [];
+    for (let c = 0; c < GRID_COLS && picks.length < maxCount; c++) {
+      if (this.tiles[row][c].cooldownRemaining > 0 && this.isTileActive(c, row)) {
+        this.tiles[row][c].cooldownRemaining = 0;
+        this.tiles[row][c].color = 'blue';
+        picks.push({ col: c, row, color: 'blue' });
+      }
+    }
+    return picks;
+  }
+
   // Convert column tiles (Lancer skill)
   public convertColumnToRed(col: number, count: number = 2) {
     if (col < 0 || col >= GRID_COLS) return;
@@ -476,6 +559,29 @@ export class GridBoard {
     for (const t of this.filterActiveTiles(targets)) {
       this.tiles[t.row][t.col].color = dom;
       this.tiles[t.row][t.col].cooldownRemaining = 0;
+    }
+  }
+
+  // v3.0 Painter skill (Chroma Infusion): paint up to maxCount adjacent
+  // ACTIVE tiles with the FOOT tile's color (order: up, down, left,
+  // right). The foot tile itself is the source, not a target. When the
+  // foot tile is empty (cooldown), fall back to the board's dominant color
+  // so the skill still does something.
+  public paintAdjacentFromFoot(centerCol: number, centerRow: number, maxCount: number = 3) {
+    const foot = this.tiles[centerRow]?.[centerCol];
+    const color = foot?.color ?? this.getDominantColor();
+    const targets = [
+      { col: centerCol, row: centerRow - 1 },
+      { col: centerCol, row: centerRow + 1 },
+      { col: centerCol - 1, row: centerRow },
+      { col: centerCol + 1, row: centerRow },
+    ];
+    let painted = 0;
+    for (const t of this.filterActiveTiles(targets)) {
+      if (painted >= maxCount) break;
+      this.tiles[t.row][t.col].color = color;
+      this.tiles[t.row][t.col].cooldownRemaining = 0;
+      painted++;
     }
   }
 

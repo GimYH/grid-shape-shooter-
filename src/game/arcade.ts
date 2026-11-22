@@ -39,8 +39,11 @@ export const ARCADE_MODE_META: {
 
 // --- 공통 ------------------------------------------------------------------
 
-// 기존 콤보 배율 규칙과 동일 (GameEngine.comboMultiplier):
-// 1콤보 이하는 1.0, 이후 1콤보당 +0.2, 상한 3.0.
+// v2.2 combo multiplier for the ORDER RUSH score (points = 100 x combo
+// x this multiplier): 1 combo or less is 1.0, then +0.2 per combo, cap
+// 3.0. This is the RUSH SCORE rule only — v3.0 changed the combat combo
+// to +6%/combo (cap x1.60), but the rush score keeps its own old rule on
+// purpose (the score chase, not combat damage, is tuned around it).
 export function comboMultFor(count: number): number {
   if (count <= 1) return 1.0;
   return Math.min(3.0, 1.0 + (count - 1) * 0.2);

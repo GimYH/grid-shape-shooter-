@@ -113,14 +113,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, ran
         {/* Battle Stats Grid (아케이드가 아닐 때만 표시) */}
         {!arcade && (
           <>
-        <div className="grid grid-cols-2 gap-3 w-full mb-6 text-left">
-          <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl">
-            <span className="text-[11px] text-slate-400 block mb-0.5">DAMAGE DEALT</span>
-            <span className="text-xl font-bold font-mono text-cyan-400 tabular-nums">
-              {stats.damageDealt}
-            </span>
-          </div>
-
+        <div className="grid grid-cols-3 gap-3 w-full mb-3 text-left">
           <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl">
             <span className="text-[11px] text-slate-400 block mb-0.5">DAMAGE TAKEN</span>
             <span className="text-xl font-bold font-mono text-rose-400 tabular-nums">
@@ -143,26 +136,34 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({ status, stats, ran
           </div>
         </div>
 
-        {/* Battle Stats Grid (v2.2) */}
-        <div className="grid grid-cols-3 gap-3 w-full mb-6 text-left">
+        {/* v3.0 Phase 2: bottom 4-cell number grid — clear time, max
+            combo, neutral wins, damage dealt. */}
+        <div className="grid grid-cols-4 gap-3 w-full mb-6 text-left">
           <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl">
-            <span className="text-[11px] text-slate-400 block mb-0.5">MAX COMBO</span>
-            <span className="text-xl font-bold font-mono text-amber-400 tabular-nums">
-              {stats.maxCombo}
-            </span>
-          </div>
-
-          <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl">
-            <span className="text-[11px] text-slate-400 block mb-0.5">BATTLE TIME</span>
-            <span className="text-xl font-bold font-mono text-white tabular-nums">
+            <span className="text-[11px] text-slate-400 block mb-0.5">클리어 타임</span>
+            <span className="text-lg font-bold font-mono text-white tabular-nums">
               {`${Math.floor(stats.gameDuration / 60)}:${String(Math.floor(stats.gameDuration % 60)).padStart(2, '0')}`}
             </span>
           </div>
 
           <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl">
-            <span className="text-[11px] text-slate-400 block mb-0.5">CLASHES WON</span>
-            <span className="text-xl font-bold font-mono text-cyan-400 tabular-nums">
+            <span className="text-[11px] text-slate-400 block mb-0.5">최대 콤보</span>
+            <span className="text-lg font-bold font-mono text-amber-400 tabular-nums">
+              {stats.maxCombo}
+            </span>
+          </div>
+
+          <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl">
+            <span className="text-[11px] text-slate-400 block mb-0.5">중립 승리</span>
+            <span className="text-lg font-bold font-mono text-cyan-400 tabular-nums">
               {stats.clashesWon}
+            </span>
+          </div>
+
+          <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl">
+            <span className="text-[11px] text-slate-400 block mb-0.5">가한 데미지</span>
+            <span className="text-lg font-bold font-mono text-cyan-400 tabular-nums">
+              {stats.damageDealt}
             </span>
           </div>
         </div>

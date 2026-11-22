@@ -11,20 +11,38 @@ import { COLOR_HEX, GRID_ROWS } from './GridEngine';
 import {
   LANCER_SPEAR_SPEED_MULT,
   MONOCHROME_BLUE_CLASH_TAKEN_MULT,
+  MONOCHROME_OVERDRIVE_MULT,
+  MONOCHROME_RED_DMG_MULT,
+  PAINTER_BIG_SPEED_MULT,
+  SNIPER_BIG_HIT_DMG_MULT,
+  CLASH_ADVANTAGE_MULT,
+  FRONTLINE_DMG_MULT,
+  FRONTLINE_SPEED_MULT,
+  OVERCHARGE_SPEED_MULT,
   SPEAR_SPEED_MULT,
   WAVE_WALL_CELL_HP_BONUS,
 } from './archetypes';
 
+// v3.0 cluster-size damage table (fixed TOTAL damage per projectile,
+// capped at 8 cells — 9+ cells keep only their cell-HP tiers).
+// damagePerCell = table / cell count, kept as a float: the final hit
+// rounds after multipliers, so the total stays on the table. 1-2 cell
+// clusters (sniper quick shots) extrapolate the 3-cell rate (4/cell):
+// 1 cell -> 4, 2 cells -> 8.
+export const CLUSTER_DAMAGE_TABLE: readonly number[] = [0, 4, 8, 12, 16, 20, 23, 25, 27];
+export function clusterBaseDamage(cellCount: number): number {
+  return CLUSTER_DAMAGE_TABLE[Math.max(0, Math.min(cellCount, 8))];
+}
+
 export class ProjectileManager {
   public projectiles: ShapeProjectile[] = [];
-  // v2.2 counter-overcharge: a projectile accelerates only once, the first
-  // time one of its cells wins a neutral clash.
-  private overcharged = new Set<string>();
   // v2.2: called when a clash is won; GameEngine reduces the launcher's
   // skill cooldown by 1.0s and counts clashesWon.
   // v2.2 Phase 2: winnerCells = the winning projectile's launch size —
   // a 6+ cell clash win fires a 35ms micro-hitstop (GameEngine side).
-  public onClashWin: ((winnerOwner: 'player' | 'enemy', winnerCells?: number) => void) | null = null;
+  // v3.0 Phase 2 Zone 1: clashPos = where the winning clash happened,
+  // so the engine can drop a 'COUNTER! -1s' floating text on the spot.
+  public onClashWin: ((winnerOwner: 'player' | 'enemy', winnerCells?: number, clashPos?: { x: number; y: number }) => void) | null = null;
 
   public createProjectile(
     owner: 'player' | 'enemy',
@@ -59,13 +77,6 @@ export class ProjectileManager {
       baseHp = 2;
     }
 
-    // Hotfix (2026-11-21): cluster damage scaling caps at 8 cells — a
-    // 16-cell meteor scales like an 8-cell one (1.5x), never 2.0x.
-    let sizeDmgMult = 1.0;
-    if (Math.min(count, 8) >= 6) {
-      sizeDmgMult = 1.5;
-    }
-
     // Blue color doubles durability
     if (cluster.color === 'blue') {
       baseHp *= 2;
@@ -82,19 +93,37 @@ export class ProjectileManager {
       baseHp += WAVE_WALL_CELL_HP_BONUS;
     }
 
-    // Calculate base damage per cell
-    let baseDmg = cluster.color === 'red' ? 4 : 3;
+    // v3.0 damage pipeline (single source of truth for the order):
+    //   base = CLUSTER_DAMAGE_TABLE[min(cells, 8)] (fixed total)
+    //   per-cell base = base / cells
+    //   creation-time multipliers (baked into damagePerCell here):
+    //     frontline x1.20, monochrome red x1.15, sniper 3+ x1.10,
+    //     overdrive x1.35
+    //   launch-buff multipliers (GameEngine, packet-carried):
+    //     transporter swap x1.15, speedster blink x1.20, royale KO +10%
+    //   hit-time multipliers (GameEngine, applied at impact):
+    //     combo 1+0.06*count (cap x1.60), core x2 after 90s,
+    //     sniper 1-2 core x0.40
+    //   hard caps last: character 30, core 55.
+    const baseTotal = clusterBaseDamage(count);
+    let dmgMult = 1.0;
     if (archetypeId === 'monochrome' && cluster.color === 'red') {
-      baseDmg *= 2.0; // Monochrome passive
+      dmgMult *= MONOCHROME_RED_DMG_MULT; // v3.0: red +15% (was x2.0)
     }
     if (overdriveActive) {
-      baseDmg *= 1.5;
+      dmgMult *= MONOCHROME_OVERDRIVE_MULT; // v3.0: x1.35 (was x1.5)
     }
-    // v2.2 frontline bonus: +25% damage on launches from the front 2 rows.
+    // v3.0 sniper: a 3+ cluster hit deals +10% damage.
+    if (archetypeId === 'sniper' && count >= 3) {
+      dmgMult *= SNIPER_BIG_HIT_DMG_MULT;
+    }
+    // v3.0 frontline bonus: +20% damage on launches from the front 2 rows.
     if (frontline) {
-      baseDmg *= 1.25;
+      dmgMult *= FRONTLINE_DMG_MULT;
     }
-    const finalDmg = Math.round(baseDmg * sizeDmgMult);
+    // Per-cell share of the table total — kept as a float so the rounded
+    // final damage stays on the table after multipliers.
+    const damagePerCell = (baseTotal * dmgMult) / count;
 
     // Calculate speed
     let speedMult = 1.0;
@@ -105,15 +134,20 @@ export class ProjectileManager {
     if (cluster.shapeType === 'spear') {
       // v2.2 balance: lancer spear 2.0 -> 1.45 (still the fastest spear,
       // but slow enough to react to / intercept in the neutral zone).
+      // v3.0: 1.45 -> 1.40.
       speedMult *= (archetypeId === 'lancer' ? LANCER_SPEAR_SPEED_MULT : SPEAR_SPEED_MULT);
     }
     if (cluster.shapeType === 'wall' && archetypeId === 'wave') {
       speedMult *= 2.0;
     }
+    // v3.0 painter: a 5+ cluster launch is +10% faster.
+    if (archetypeId === 'painter' && count >= 5) {
+      speedMult *= PAINTER_BIG_SPEED_MULT;
+    }
 
     const baseVy = 560; // px/s (v2.2)
     // v2.2 frontline bonus: +15% speed on launches from the front 2 rows.
-    const frontlineSpeed = frontline ? 1.15 : 1.0;
+    const frontlineSpeed = frontline ? FRONTLINE_SPEED_MULT : 1.0;
     const vy = owner === 'player' ? -baseVy * speedMult * frontlineSpeed : baseVy * speedMult * frontlineSpeed;
 
     const cells: ProjectileCell[] = cluster.tiles.map((t) => ({
@@ -137,12 +171,13 @@ export class ProjectileManager {
       cellWidth: cellW,
       cellHeight: cellH,
       cells,
-      damagePerCell: finalDmg,
+      damagePerCell,
       speedMultiplier: speedMult,
       glowColor: COLOR_HEX[cluster.color],
       trailTimer: 0,
       frontline,
       comboAwarded: false,
+      overchargeTriggered: false,
     };
 
     this.projectiles.push(proj);
@@ -176,13 +211,15 @@ export class ProjectileManager {
       cellWidth: cellW,
       cellHeight: cellH,
       cells: [{ relCol: 0, relRow: 0, hp: 2, maxHp: 2, destroyed: false }],
-      damagePerCell: 12,
+      // v3.0: Piercing Beam damage 24 (was 12).
+      damagePerCell: 24,
       speedMultiplier: 2.2,
       glowColor: '#00FFAA',
       trailTimer: 0,
       frontline: false,
       isBeam: true,
       comboAwarded: false,
+      overchargeTriggered: false,
     };
 
     this.projectiles.push(proj);
@@ -258,8 +295,9 @@ export class ProjectileManager {
     };
 
     // Clash damage multiplier for `attacker` hitting `defender`.
+    // v3.0: type advantage is x1.75 (was x2.0).
     const clashMult = (attacker: ShapeProjectile, defender: ShapeProjectile): number => {
-      if (beats(attacker, defender)) return 2;
+      if (beats(attacker, defender)) return CLASH_ADVANTAGE_MULT;
       if (
         attacker.color === 'blue' &&
         defender.color === 'red' &&
@@ -316,21 +354,23 @@ export class ProjectileManager {
               }
 
               // v2.2 counter-overcharge: the surviving cell's projectile
-              // accelerates x1.4 once, and its launcher's skill cooldown
+              // accelerates x1.35 once, and its launcher's skill cooldown
               // drops by 1.0s (via onClashWin). Upper bound: only a
               // projectile launched with 3+ cells qualifies — a 1-2 cell
               // snipe winning a clash gets no overcharge. cells.length is
               // the launch size (cells are never removed, only marked
-              // destroyed).
-              if (pCell.hp > 0 && eCell.hp <= 0 && pProj.cells.length >= 3 && !this.overcharged.has(pProj.id)) {
-                this.overcharged.add(pProj.id);
-                pProj.vy *= 1.4;
-                this.onClashWin?.('player', pProj.cells.length);
+              // destroyed). v3.0: the once-only flag lives on the
+              // projectile (overchargeTriggered), not a manager-side Set;
+              // speed is x1.35 (was x1.4).
+              if (pCell.hp > 0 && eCell.hp <= 0 && pProj.cells.length >= 3 && !pProj.overchargeTriggered) {
+                pProj.overchargeTriggered = true;
+                pProj.vy *= OVERCHARGE_SPEED_MULT;
+                this.onClashWin?.('player', pProj.cells.length, { x: clashX, y: clashY });
               }
-              if (eCell.hp > 0 && pCell.hp <= 0 && eProj.cells.length >= 3 && !this.overcharged.has(eProj.id)) {
-                this.overcharged.add(eProj.id);
-                eProj.vy *= 1.4;
-                this.onClashWin?.('enemy', eProj.cells.length);
+              if (eCell.hp > 0 && pCell.hp <= 0 && eProj.cells.length >= 3 && !eProj.overchargeTriggered) {
+                eProj.overchargeTriggered = true;
+                eProj.vy *= OVERCHARGE_SPEED_MULT;
+                this.onClashWin?.('enemy', eProj.cells.length, { x: clashX, y: clashY });
               }
 
               particleSystem.addShockwave(clashX, clashY, 45, '#FFFFFF');
@@ -344,6 +384,5 @@ export class ProjectileManager {
 
   public clear() {
     this.projectiles = [];
-    this.overcharged.clear();
   }
 }

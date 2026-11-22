@@ -17,6 +17,7 @@ import { MobileJoystickControls } from './components/MobileJoystickControls';
 import { ArchetypeId, GameMode } from './types/game';
 import { soundManager } from './audio/soundManager';
 import { EffectQuality } from './game/ParticleSystem';
+import { recordLastSingle } from './game/campaign';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -252,7 +253,22 @@ export default function App() {
 
   const handleDeployCharacter = (p1Arch: ArchetypeId, p2Arch: ArchetypeId) => {
     setShowCharSelect(false);
+    // v3.0 Phase 2: remember the last single deploy for the title
+    // screen's one-click quick entry.
+    if (selectedMode === 'single') recordLastSingle(stageNum, p1Arch);
     engineRef.current?.startGame(selectedMode, stageNum, p1Arch, p2Arch);
+    setGameStatus('playing');
+  };
+
+  // v3.0 Phase 2: title-screen quick entry — straight into the last
+  // single stage with the last archetype, no modals. A stage-1 start
+  // begins a fresh no-continue run (startGame rule); a later stage
+  // abandons any active run, same as picking it in the stage modal.
+  const handleQuickSingle = (stage: number, arch: ArchetypeId) => {
+    setSelectedMode('single');
+    setStageNum(stage);
+    recordLastSingle(stage, arch);
+    engineRef.current?.startGame('single', stage, arch, arch);
     setGameStatus('playing');
   };
 
@@ -360,6 +376,7 @@ export default function App() {
         {gameStatus === 'title' && (
           <TitleScreen
             onSelectMode={handleSelectMode}
+            onQuickSingle={handleQuickSingle}
             onSelectArcade={handleSelectArcade}
             onOpenOnlineModal={() => {
               setOnlineModalMode('duel');

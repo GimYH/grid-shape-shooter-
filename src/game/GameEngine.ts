@@ -7,7 +7,7 @@ import { FrameDefense } from './frameDefense';
 import { CanvasRenderer } from './Renderer';
 import { soundManager } from '../audio/soundManager';
 import { ArchetypeId, Cluster, CoreState, DefeatCause, GameMode, GameStats, ShapeProjectile, ShrinkPhase, ShrinkRect, SkillEffect } from '../types/game';
-import { ARCHETYPES, MONOCHROME_ABSORB_COOLDOWN_SEC, MONOCHROME_ABSORB_GAIN, MONOCHROME_ABSORB_REFILL_SEC, MONOCHROME_SHIELD_MAX, SPEEDSTER_FIRE_DMG_MULT, SPEEDSTER_FIRE_SPEED_MULT, TRANSPORTER_SWAP_DMG_MULT } from './archetypes';
+import { ARCHETYPES, DEFAULT_CORE_HP, MONOCHROME_ABSORB_COOLDOWN_SEC, MONOCHROME_ABSORB_GAIN, MONOCHROME_ABSORB_REFILL_SEC, MONOCHROME_SHIELD_MAX, SNIPER_CORE_DMG_MULT, SPEEDSTER_DASH_SPEED_MULT, SPEEDSTER_FIRE_DMG_MULT, TRANSPORTER_SWAP_DMG_MULT } from './archetypes';
 import { STAGES } from './stages';
 import {
   startCampaignRun,
@@ -94,6 +94,9 @@ export const COUNTDOWN_MS = 1500;
 export const COUNTDOWN_STEP_MS = 450;
 export const SLOWMO_DURATION_S = 0.8;
 export const SLOWMO_TIMESCALE = 0.25;
+// v3.0 sniper beam telegraph: 0.35s of game time between skill cast and
+// the beam firing (red aim line shown meanwhile).
+export const BEAM_TELEGRAPH_SEC = 0.35;
 // v2.2 Phase 2: input buffer (100ms) and launch grace (60ms — a launch
 // pressed just after stepping off a 3+ cluster still fires it).
 export const INPUT_BUFFER_MS = 100;
@@ -109,13 +112,15 @@ export function countdownLabel(elapsedMs: number): '3' | '2' | '1' | 'FIGHT!' {
 }
 
 // v2.2 anti-instant-kill: no single direct character hit deals more than
-// 35 damage. (Core hits are not capped.)
-export const MAX_SINGLE_HIT_DMG = 35;
+// 30 damage. (Core hits are not capped by this one.)
+// v3.0: 35 -> 30.
+export const MAX_SINGLE_HIT_DMG = 30;
 
 // Hotfix (2026-11-21): no single rear-core hit deals more than 60
 // damage (per cell impact, meteor AOE included) — a 16-cell meteor must
-// not two-shot a 250 HP core.
-export const MAX_CORE_HIT_DMG = 60;
+// not two-shot a 300 HP core.
+// v3.0: 60 -> 55 (core default HP is 300 now).
+export const MAX_CORE_HIT_DMG = 55;
 
 // v2.2 shrink anchor clamp: the 90s safe-zone center is clamped into the
 // inner area (columns 3-7, rows 2-4, 1-indexed) so it never overlaps the
@@ -146,10 +151,10 @@ export function clampShrinkAnchor(
   };
 }
 
-// v2.2: a sniper projectile of 1-2 cells deals 50% damage to the rear core
-// (character direct hits stay at 100%).
+// v2.2: a sniper projectile of 1-2 cells deals 40% damage to the rear core
+// (character direct hits stay at 100%). v3.0: 50% -> 40%.
 export function sniperCoreDamageMult(archetypeId: string | undefined, cellCount: number): number {
-  return archetypeId === 'sniper' && cellCount <= 2 ? 0.5 : 1;
+  return archetypeId === 'sniper' && cellCount <= 2 ? SNIPER_CORE_DMG_MULT : 1;
 }
 
 // v2.2 balance: a sniper 1-2 cell snipe neither raises the combo count nor
@@ -233,6 +238,11 @@ export class GameEngine {
   public rematchRequested: boolean = false;
   // v2.2 Phase 2: portrait cut-in { portrait, label, until }.
   public cutin: { portrait: ArchetypeId; label: string; until: number; durationMs: number } | null = null;
+  // v3.0 sniper beam telegraph: a beam is requested on skill cast and
+  // fires 0.35s later (game time), after a red aim line is drawn. Each
+  // entry is { owner, column, fireAt (gameTime) }. The beam is created in
+  // update() so the telegraph is visible for the full 0.35s.
+  public beamPending: { owner: 'player' | 'enemy'; col: number; fireAt: number }[] = [];
   // v2.2 Phase 2: rejection feedback — a shaken tile and a flashing HUD
   // icon, both with a performance.now expiry.
   public rejectTile: { owner: 'player' | 'enemy'; col: number; row: number; until: number } | null = null;
@@ -313,20 +323,22 @@ export class GameEngine {
   public combo2Timer: number = 0;
   public combo2Max: number = 0;
 
+  // v3.0: +6% damage per combo, max 10 combos (x1.60). (Was +20%/combo
+  // from the 2nd combo, cap x3.0.)
   public get comboMultiplier(): number {
-    if (this.comboCount <= 1) return 1.0;
-    return Math.min(3.0, 1.0 + (this.comboCount - 1) * 0.2);
+    if (this.comboCount <= 0) return 1.0;
+    return Math.min(1.6, 1.0 + this.comboCount * 0.06);
   }
 
   public get combo2Multiplier(): number {
-    if (this.combo2Count <= 1) return 1.0;
-    return Math.min(3.0, 1.0 + (this.combo2Count - 1) * 0.2);
+    if (this.combo2Count <= 0) return 1.0;
+    return Math.min(1.6, 1.0 + this.combo2Count * 0.06);
   }
 
-  // v2.2 rear cores: one per side. Player core is always 250 HP; the
-  // enemy core is 250, or 400 in the final boss stage.
-  public playerCore: CoreState = { hp: 250, maxHp: 250, collapsed: false, crack: 0 };
-  public enemyCore: CoreState = { hp: 250, maxHp: 250, collapsed: false, crack: 0 };
+  // v2.2 rear cores: one per side. Player core is always 300 HP (v3.0);
+  // the enemy core is 300, or the stage value in single/boss mode.
+  public playerCore: CoreState = { hp: DEFAULT_CORE_HP, maxHp: DEFAULT_CORE_HP, collapsed: false, crack: 0 };
+  public enemyCore: CoreState = { hp: DEFAULT_CORE_HP, maxHp: DEFAULT_CORE_HP, collapsed: false, crack: 0 };
 
   // v2.2 90-second shrink zone. Hotfix (2026-11-21): the zone is
   // symmetric around each board's center (cols 4-6, rows 2-4, 1-indexed)
@@ -443,17 +455,28 @@ export class GameEngine {
 
     // v2.2 counter-overcharge: a clash winner's launcher gets -1.0s skill
     // cooldown and the win is counted for the result screen.
-    // v2.2 Phase 2: a 6+ cell clash win also fires a 35ms micro-hitstop
-    // + a small shake (big-block collision feedback).
-    this.projectileMgr.onClashWin = (winnerOwner, winnerCells = 0) => {
+    // v2.2 Phase 2: a 6+ cell clash win also fires a 30ms micro-hitstop
+    // + a small shake (big-block collision feedback). v3.0: 35ms -> 30ms.
+    // v3.0 Phase 2 Zone 1: the winner also gets a 'COUNTER! -1s'
+    // floating text at the clash spot (player cyan, enemy red).
+    this.projectileMgr.onClashWin = (winnerOwner, winnerCells = 0, clashPos) => {
       this.stats.clashesWon++;
       if (winnerOwner === 'player') {
         this.player.skillCooldownRemaining = Math.max(0, this.player.skillCooldownRemaining - 1.0);
       } else if (this.player2) {
         this.player2.skillCooldownRemaining = Math.max(0, this.player2.skillCooldownRemaining - 1.0);
       }
+      if (clashPos) {
+        this.particleSystem.addFloatingText(
+          clashPos.x,
+          clashPos.y - 24,
+          'COUNTER! -1s',
+          winnerOwner === 'player' ? '#00FFAA' : '#FF5566',
+          16
+        );
+      }
       if (winnerCells >= 6) {
-        this.hitstopTimer = Math.max(this.hitstopTimer, 0.035);
+        this.hitstopTimer = Math.max(this.hitstopTimer, 0.03);
         this.screenShake = Math.max(this.screenShake, 0.25);
       }
     };
@@ -483,6 +506,8 @@ export class GameEngine {
     this.wasSkillReady = true;
     this.wasSkillReady2 = true;
     this.awakeningCutinShown = false;
+    // v3.0: a battle start drops any beam telegraph still pending.
+    this.beamPending = [];
     // Optimization (2.2): each battle starts at full particle quality;
     // the frame defense re-latches only if this battle actually runs slow.
     this.frameDefense.reset();
@@ -504,12 +529,18 @@ export class GameEngine {
 
   // v2.2: reset both rear cores and the whole shrink-zone state. Called on
   // every battle start (and from the constructor for the title screen).
+  // v3.0: default core HP is 300. Single/boss uses the stage value;
+  // arcade keeps 250 (defense-mode tuning — the player core there is
+  // part of the mode's own numbers, not the shared default).
   private resetCores() {
     const enemyCoreHp =
-      this.mode === 'multi' || this.mode === 'royale' || this.mode === 'arcade'
+      this.mode === 'arcade'
         ? 250
-        : STAGES[this.currentStage - 1].coreHp;
-    this.playerCore = { hp: 250, maxHp: 250, collapsed: false, crack: 0 };
+        : this.mode === 'multi' || this.mode === 'royale'
+          ? DEFAULT_CORE_HP
+          : STAGES[this.currentStage - 1].coreHp;
+    const playerCoreHp = this.mode === 'arcade' ? 250 : DEFAULT_CORE_HP;
+    this.playerCore = { hp: playerCoreHp, maxHp: playerCoreHp, collapsed: false, crack: 0 };
     this.enemyCore = { hp: enemyCoreHp, maxHp: enemyCoreHp, collapsed: false, crack: 0 };
     this.shrinkPhase = 'idle';
     this.shrinkAnchor = null;
@@ -526,7 +557,7 @@ export class GameEngine {
   private setCoreHp(side: 'player' | 'enemy', newHp: number) {
     const core = side === 'player' ? this.playerCore : this.enemyCore;
     // Clamped both ways: KO rewards must not push the core above its max
-    // (spec: +40, cap 250), and damage must not push it below 0.
+    // (spec: +40, cap maxHp), and damage must not push it below 0.
     core.hp = Math.max(0, Math.min(core.maxHp, newHp));
     core.crack = core.hp <= core.maxHp * 0.3 ? 2 : core.hp <= core.maxHp * 0.6 ? 1 : 0;
     if (!core.collapsed && core.hp <= core.maxHp * 0.5) {
@@ -548,9 +579,9 @@ export class GameEngine {
     if (core.collapsed) return;
     core.collapsed = true;
     board.collapseSides();
-    // v2.2 Phase 2: a core hitting 50% fires a 35ms micro-hitstop + a
+    // v2.2 Phase 2: a core hitting 50% fires a 30ms micro-hitstop + a
     // shake (the collapse is a big-board event, like a 6+ collision).
-    this.hitstopTimer = Math.max(this.hitstopTimer, 0.035);
+    this.hitstopTimer = Math.max(this.hitstopTimer, 0.03);
     this.screenShake = Math.max(this.screenShake, 0.3);
     const originX = side === 'player' ? this.renderer.playerOriginX : this.renderer.enemyOriginX;
     const step = this.renderer.cellW + this.renderer.gap;
@@ -668,26 +699,49 @@ export class GameEngine {
     this.triggerStateUpdate();
   }
 
-  // Shrink the safe rect from the full (possibly collapsed) board toward a
-  // 2x2-tile zone centered on the anchor over 90..120s; fully closed at 135s.
+  // v3.0 shrink staging: 90..120s the safe zone closes from the full
+  // (possibly collapsed) board toward a 3x3-tile zone centered on the
+  // anchor; 120..135s it closes further to a 1x3-tile zone (1 column wide,
+  // 3 rows tall, centered on the anchor); at 135s+ it stays 1x3 and the
+  // phase is 'closed'. (Was: full -> 2x2 by 120s, fully closed at 135s.)
   private shrinkRectFor(anchor: { x: number; y: number } | null, full: ShrinkRect | null, t: number): ShrinkRect | null {
     if (!anchor || !full) return null;
     const stepX = this.renderer.cellW + this.renderer.gap;
     const stepY = this.renderer.cellH + this.renderer.gap;
-    const targetW = 2 * stepX - this.renderer.gap;
-    const targetH = 2 * stepY - this.renderer.gap;
-    if (t >= 45) {
-      return { x: anchor.x, y: anchor.y, w: 0, h: 0 };
-    }
-    const progress = Math.min(1, Math.max(0, t / 30));
-    const tx = Math.max(full.x, Math.min(full.x + full.w - targetW, anchor.x - targetW / 2));
-    const ty = Math.max(full.y, Math.min(full.y + full.h - targetH, anchor.y - targetH / 2));
-    return {
-      x: full.x + (tx - full.x) * progress,
-      y: full.y + (ty - full.y) * progress,
-      w: full.w + (targetW - full.w) * progress,
-      h: full.h + (targetH - full.h) * progress,
+    const rect3x3: ShrinkRect = {
+      x: anchor.x - (3 * stepX - this.renderer.gap) / 2,
+      y: anchor.y - (3 * stepY - this.renderer.gap) / 2,
+      w: 3 * stepX - this.renderer.gap,
+      h: 3 * stepY - this.renderer.gap,
     };
+    const rect1x3: ShrinkRect = {
+      x: anchor.x - this.renderer.cellW / 2,
+      y: anchor.y - (3 * stepY - this.renderer.gap) / 2,
+      w: this.renderer.cellW,
+      h: 3 * stepY - this.renderer.gap,
+    };
+    // Clamp both stage targets inside the full board rect.
+    const clampRect = (r: ShrinkRect): ShrinkRect => ({
+      x: Math.max(full.x, Math.min(full.x + full.w - r.w, r.x)),
+      y: Math.max(full.y, Math.min(full.y + full.h - r.h, r.y)),
+      w: Math.min(r.w, full.w),
+      h: Math.min(r.h, full.h),
+    });
+    const target3 = clampRect(rect3x3);
+    const target1 = clampRect(rect1x3);
+    const lerp = (a: ShrinkRect, b: ShrinkRect, p: number): ShrinkRect => ({
+      x: a.x + (b.x - a.x) * p,
+      y: a.y + (b.y - a.y) * p,
+      w: a.w + (b.w - a.w) * p,
+      h: a.h + (b.h - a.h) * p,
+    });
+    if (t >= 45) return target1;
+    if (t >= 30) {
+      const p2 = Math.min(1, Math.max(0, (t - 30) / 15));
+      return lerp(target3, target1, p2);
+    }
+    const p1 = Math.min(1, Math.max(0, t / 30));
+    return lerp(full, target3, p1);
   }
 
   private updateShrinkRects() {
@@ -1469,11 +1523,11 @@ export class GameEngine {
     }
 
     if (packet.killerId === this.royaleMyId) {
-      // KO rewards: HP +20 (cap 100), core +40 (cap 250), +10% damage
+      // KO rewards: HP +20 (cap maxHp), core +40 (cap maxHp), +10% damage
       // (max 5 stacks, +50%).
       this.royaleKos++;
       this.royaleDamageBuff = Math.min(ROYALE_KO_DMG_BUFF_MAX, this.royaleDamageBuff + 1);
-      this.player.hp = Math.min(100, this.player.hp + ROYALE_KO_HP_REWARD);
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + ROYALE_KO_HP_REWARD);
       this.setCoreHp('player', this.playerCore.hp + ROYALE_KO_CORE_REWARD);
       this.particleSystem.addFloatingText(this.player.x, this.player.y - 50, 'KO! +20 HP · +40 코어 · +10% 데미지', '#FFD166', 18);
       this.particleSystem.addShockwave(this.player.x, this.player.y, 120, '#FFD166');
@@ -1574,10 +1628,10 @@ export class GameEngine {
           !!d.frontline
         );
         // v2.2 balance: apply the sender's launch buff multipliers verbatim
-        // (transporter swap-link / speedster fire buff) so both sides deal
-        // the exact same damage/speed.
+        // (transporter swap-link / speedster buffs) so both sides deal
+        // the exact same damage/speed. Float kept (v3.0 table shares).
         if (d.dmgMult && d.dmgMult !== 1) {
-          remoteProj.damagePerCell = Math.round(remoteProj.damagePerCell * d.dmgMult);
+          remoteProj.damagePerCell *= d.dmgMult;
         }
         if (d.speedMult && d.speedMult !== 1) {
           remoteProj.vy *= d.speedMult;
@@ -1630,6 +1684,8 @@ export class GameEngine {
         const gain =
           typeof d.shieldGain === 'number' ? d.shieldGain : MONOCHROME_ABSORB_GAIN;
         this.player2.shield = Math.min(MONOCHROME_SHIELD_MAX, this.player2.shield + gain);
+        // v3.0: mirror the sender's 1-stack absorb cost on the remote copy.
+        this.player2.discardStacks = Math.max(0, this.player2.discardStacks - 1);
         this.particleSystem.addFloatingText(
           this.player2.x,
           this.player2.y - 30,
@@ -1688,16 +1744,9 @@ export class GameEngine {
           this.renderer.cellH,
           this.renderer.gap,
           () => {
-            this.projectileMgr.createSniperBeam(
-              'enemy',
-              this.player2?.currentCol || 0,
-              this.renderer.enemyOriginX,
-              this.renderer.enemyOriginY,
-              this.renderer.cellW,
-              this.renderer.cellH,
-              this.renderer.gap
-            );
-            soundManager.playLaunch('yellow', 1, 'spear');
+            // v3.0: the remote player's beam is queued behind the same
+            // 0.35s telegraph (fireDueBeams in update()).
+            this.enqueueBeam('enemy', this.player2?.currentCol || 0);
           },
           effect,
           // Hotfix (2026-11-21): blink direction from the sender's packet
@@ -1947,7 +1996,19 @@ export class GameEngine {
     // Hotfix (2026-11-21): absorbed tiles refill in 1.0s (was 0.5s), and
     // shield gain has a 2.0s internal cooldown — absorbing during the
     // cooldown still evaporates the cluster but grants no shield.
+    // v3.0: an absorb costs 1 shared discard stack. With 0 stacks the
+    // absorb is blocked with rejection feedback (nothing evaporates).
+    // The stack is spent whenever the absorb executes — a cooldown absorb
+    // evaporates tiles too, just with no shield gain.
     if (actor.archetypeId === 'monochrome' && cluster.color !== 'red') {
+      if (actor.discardStacks <= 0) {
+        if (!fromBuffer) {
+          this.rejectActionFeedback('discard', playerNum);
+          this.particleSystem.addFloatingText(actor.x, actor.y - 30, 'NO DISCARD STACK!', '#94A3B8', 15);
+        }
+        return false;
+      }
+      actor.discardStacks -= 1;
       const shieldGain =
         actor.absorbCooldownRemaining <= 0 ? MONOCHROME_ABSORB_GAIN : 0;
       if (shieldGain > 0) {
@@ -1992,21 +2053,28 @@ export class GameEngine {
 
     const frontline = this.isFrontlineLaunch(ownerStr, cluster);
 
-    // v2.2 balance: transporter swap-link / speedster fire buffs — the
-    // first launch within 1.5s of a swap (transporter) or blink/dash
-    // (speedster) is buffed. Consumed here; the multipliers travel in the
+    // v3.0 launch buffs — consumed here; the multipliers travel in the
     // launch packet so the remote side applies the exact same damage/speed
     // instead of recomputing (its copy of the buff state lags by latency).
+    // Transporter swap-link: +15% damage, only on a 4+ cluster launch
+    // within 1.5s of a swap (a smaller launch does not consume it).
+    // Speedster blink: +20% damage, only on a 3+ cluster launch within
+    // 1.5s of a blink. Speedster dash: +10% speed on the first launch
+    // within 1.0s of a dash (any size).
     let buffDmgMult = 1;
     let buffSpeedMult = 1;
-    if (actor.swapBuffRemaining > 0) {
+    const launchSize = cluster.tiles.length;
+    if (actor.swapBuffRemaining > 0 && launchSize >= 4) {
       buffDmgMult *= TRANSPORTER_SWAP_DMG_MULT;
       actor.swapBuffRemaining = 0;
     }
-    if (actor.speedBuffRemaining > 0) {
+    if (actor.speedBuffRemaining > 0 && launchSize >= 3) {
       buffDmgMult *= SPEEDSTER_FIRE_DMG_MULT;
-      buffSpeedMult *= SPEEDSTER_FIRE_SPEED_MULT;
       actor.speedBuffRemaining = 0;
+    }
+    if (actor.dashSpeedBuffRemaining > 0) {
+      buffSpeedMult *= SPEEDSTER_DASH_SPEED_MULT;
+      actor.dashSpeedBuffRemaining = 0;
     }
 
     if (this.isOnline && broadcast && playerNum === 1) {
@@ -2048,9 +2116,10 @@ export class GameEngine {
       frontline
     );
 
-    // v2.2 balance: apply the launch buffs computed above.
+    // Apply the launch buffs computed above (float kept: damagePerCell is
+    // a per-cell share of the v3.0 table total; rounding happens at impact).
     if (buffDmgMult !== 1) {
-      proj.damagePerCell = Math.round(proj.damagePerCell * buffDmgMult);
+      proj.damagePerCell *= buffDmgMult;
     }
     if (buffSpeedMult !== 1) {
       proj.vy *= buffSpeedMult;
@@ -2060,9 +2129,7 @@ export class GameEngine {
     // GRID ROYALE: KO damage buff (+10% per KO, max +50%) applies to my
     // launches; the buffed damage is what the portal packet carries.
     if (this.mode === 'royale' && playerNum === 1 && this.royaleDamageBuff > 0) {
-      proj.damagePerCell = Math.round(
-        proj.damagePerCell * (1 + ROYALE_KO_DMG_BUFF_STEP * this.royaleDamageBuff)
-      );
+      proj.damagePerCell *= 1 + ROYALE_KO_DMG_BUFF_STEP * this.royaleDamageBuff;
     }
 
     board.launchCluster(cluster);
@@ -2138,22 +2205,9 @@ export class GameEngine {
       this.renderer.cellH,
       this.renderer.gap,
       () => {
-        // Sniper beam
-        const beam = this.projectileMgr.createSniperBeam(
-          ownerStr,
-          actor.currentCol,
-          originX,
-          originY,
-          this.renderer.cellW,
-          this.renderer.cellH,
-          this.renderer.gap
-        );
-        if (this.mode === 'royale' && this.royaleDamageBuff > 0) {
-          beam.damagePerCell = Math.round(
-            beam.damagePerCell * (1 + ROYALE_KO_DMG_BUFF_STEP * this.royaleDamageBuff)
-          );
-        }
-        soundManager.playLaunch('yellow', 1, 'spear');
+        // v3.0: the beam does not fire instantly — it is queued behind a
+        // 0.35s red aim-line telegraph (fireDueBeams in update()).
+        this.enqueueBeam(ownerStr, actor.currentCol);
       }
     );
 
@@ -2250,9 +2304,14 @@ export class GameEngine {
     // v2.3 monochrome passive: a non-red cluster evaporates into shield
     // instead of launching (mirrors the player rule), unless this launch
     // is a wave core-defense counter.
-    if (aiArchs.includes('monochrome') && cluster.color !== 'red' && !bypass) {
+    // v3.0: the absorb costs 1 shared discard stack (same rule as the
+    // player). With 0 stacks the absorb is blocked and the cluster
+    // launches as a normal projectile instead of evaporating.
+    if (aiArchs.includes('monochrome') && cluster.color !== 'red' && !bypass && this.enemy.discardStacks > 0) {
       // Hotfix (2026-11-21): same absorb nerf as the player — 1.0s refill,
-      // +8 shield, 2.0s internal cooldown on the gain.
+      // +8 shield, 2.0s internal cooldown on the gain. The stack is spent
+      // whenever the absorb executes, even during the cooldown.
+      this.enemy.discardStacks -= 1;
       const shieldGain =
         this.enemy.absorbCooldownRemaining <= 0 ? MONOCHROME_ABSORB_GAIN : 0;
       if (shieldGain > 0) {
@@ -2304,16 +2363,16 @@ export class GameEngine {
       overdrive,
       this.isFrontlineLaunch('enemy', cluster)
     );
-    // v2.2 balance: consume the AI's launch buffs (transporter swap-link /
-    // speedster blink) on its next launch, same rule as the player.
-    if (this.enemy.swapBuffRemaining > 0) {
-      aiProj.damagePerCell = Math.round(aiProj.damagePerCell * TRANSPORTER_SWAP_DMG_MULT);
+    // v3.0: consume the AI's launch buffs on its next launch, same rule
+    // as the player — swap-link +15% damage on 4+ clusters, blink +20%
+    // damage on 3+ clusters. (The AI has no dash buff.)
+    const aiLaunchSize = cluster.tiles.length;
+    if (this.enemy.swapBuffRemaining > 0 && aiLaunchSize >= 4) {
+      aiProj.damagePerCell *= TRANSPORTER_SWAP_DMG_MULT;
       this.enemy.swapBuffRemaining = 0;
     }
-    if (this.enemy.speedBuffRemaining > 0) {
-      aiProj.damagePerCell = Math.round(aiProj.damagePerCell * SPEEDSTER_FIRE_DMG_MULT);
-      aiProj.vy *= SPEEDSTER_FIRE_SPEED_MULT;
-      aiProj.speedMultiplier *= SPEEDSTER_FIRE_SPEED_MULT;
+    if (this.enemy.speedBuffRemaining > 0 && aiLaunchSize >= 3) {
+      aiProj.damagePerCell *= SPEEDSTER_FIRE_DMG_MULT;
       this.enemy.speedBuffRemaining = 0;
     }
     this.enemyBoard.launchCluster(cluster);
@@ -2353,18 +2412,15 @@ export class GameEngine {
           // Frozen: no update, no input.
         } else if (this.hitstopTimer > 0) {
           this.hitstopTimer -= dt;
-          // Hotfix (2026-11-21): a dash pressed during hitstop must not
-          // be swallowed. The input buffer window is wall-clock, but
-          // update() (and flushInputBuffers) does not run while the game
-          // is frozen — so a chained hitstop could expire a buffered
-          // dash before it is ever retried. Freeze the window with the
-          // game: extend each buffered input by the wall time spent
-          // frozen. The in-progress dash itself is already safe — its
-          // duration only ticks inside update(), which is skipped here.
-          for (const pn of [1, 2] as const) {
-            const buf = this.inputBuffer[pn];
-            if (buf) buf.until += rawDt * 1000;
-          }
+          // v3.0 input/physics separation: a hitstop freezes projectiles,
+          // boards, shrink, AI and gameTime — but character state keeps
+          // running. Dash state/duration, skill cooldowns, launch-buff
+          // windows and the 100ms input buffer tick normally inside
+          // updateCharactersDuringHitstop(), so a dash pressed (or in
+          // progress) during a hitstop is never cancelled, frozen or
+          // swallowed. (The hotfix-era buffer-until freeze is gone: the
+          // buffer is flushed during the hitstop itself.)
+          this.updateCharactersDuringHitstop(dt);
         } else {
           this.update(dt);
         }
@@ -2387,6 +2443,82 @@ export class GameEngine {
     };
 
     this.animationFrameId = requestAnimationFrame(loop);
+  }
+
+  // v3.0: what still runs during a hitstop — character movement, dash
+  // state/timers, skill cooldowns, launch-buff windows, discard recharge
+  // and the input buffer. Projectiles, boards, shrink, AI decisions and
+  // gameTime stay frozen. The AI itself is frozen too (its launch/skill
+  // decisions are combat actions, not character state).
+  private updateCharactersDuringHitstop(dt: number) {
+    this.flushInputBuffers();
+    const isLocal2P = this.mode === 'multi' && !this.isOnline;
+    this.player.analogMove = this.joystickVector;
+    this.player.update(
+      dt,
+      this.keys,
+      this.renderer.playerOriginX,
+      this.renderer.playerOriginY,
+      this.renderer.cellW,
+      this.renderer.cellH,
+      this.renderer.gap,
+      this.playerBoard,
+      isLocal2P
+    );
+    if (this.player2) {
+      if (this.isOnline) {
+        this.player2.updateRemote(dt);
+      } else {
+        this.player2.update(
+          dt,
+          this.keys,
+          this.renderer.enemyOriginX,
+          this.renderer.enemyOriginY,
+          this.renderer.cellW,
+          this.renderer.cellH,
+          this.renderer.gap,
+          this.enemyBoard,
+          true
+        );
+      }
+    }
+  }
+
+  // v3.0 sniper beam telegraph: queue a beam to fire 0.35s later (game
+  // time). The renderer draws the red aim line while it is pending.
+  private enqueueBeam(owner: 'player' | 'enemy', col: number) {
+    this.beamPending.push({ owner, col, fireAt: this.gameTime + BEAM_TELEGRAPH_SEC });
+  }
+
+  // Fire every beam whose telegraph expired. Runs inside update() (only
+  // while playing), so a beam never fires during slow-mo or after the
+  // battle ended.
+  private fireDueBeams() {
+    if (this.status !== 'playing' || this.beamPending.length === 0) return;
+    const due = this.beamPending.filter((b) => this.gameTime >= b.fireAt);
+    if (due.length === 0) return;
+    this.beamPending = this.beamPending.filter((b) => this.gameTime < b.fireAt);
+    for (const b of due) {
+      const originX = b.owner === 'player' ? this.renderer.playerOriginX : this.renderer.enemyOriginX;
+      const originY = b.owner === 'player' ? this.renderer.playerOriginY : this.renderer.enemyOriginY;
+      const beam = this.projectileMgr.createSniperBeam(
+        b.owner,
+        b.col,
+        originX,
+        originY,
+        this.renderer.cellW,
+        this.renderer.cellH,
+        this.renderer.gap
+      );
+      // GRID ROYALE: KO damage buff (+10% per KO, max +50%) applies to
+      // beams too, same rule as the instant beam had.
+      if (this.mode === 'royale' && b.owner === 'player' && this.royaleDamageBuff > 0) {
+        beam.damagePerCell = Math.round(
+          beam.damagePerCell * (1 + ROYALE_KO_DMG_BUFF_STEP * this.royaleDamageBuff)
+        );
+      }
+      soundManager.playLaunch('yellow', 1, 'spear');
+    }
   }
 
   private update(dt: number) {
@@ -2514,9 +2646,10 @@ export class GameEngine {
       }
     }
 
-    // Grid cooldown recovery. Collapsed boards refill 1.3x faster
-    // (1.3s -> 1.0s). The return value tells whether any tile refilled
-    // this frame, which is when the refill sound plays (throttled).
+    // Grid cooldown recovery. Collapsed boards refill 20% faster
+    // (1.3s -> 1.04s, v3.0; was 1.3x -> 1.0s). The return value tells
+    // whether any tile refilled this frame, which is when the refill
+    // sound plays (throttled).
     // Royale gang-up compensation: 3+ players targeting me speeds my
     // refill by 15%.
     const gangupMult =
@@ -2524,11 +2657,11 @@ export class GameEngine {
         ? ROYALE_GANGUP_REFILL_MULT
         : 1.0;
     // 아케이드 코어 디펜스 붕괴 시 리필 가속은 기획서 수치 20%
-    // (DEFENSE_COLLAPSE_REFILL_MULT = 1.2, 기존 모드 1.3이 아님).
+    // (DEFENSE_COLLAPSE_REFILL_MULT = 1.2, 기존 모드 1.25가 아님).
     const collapseRefillMult = this.playerCore.collapsed
       ? this.isArcade
         ? DEFENSE_COLLAPSE_REFILL_MULT
-        : 1.3
+        : 1.25
       : 1.0;
     const playerCDMult =
       (this.player.archetypeId === 'speedster' ? 1.5 : 1.0) * collapseRefillMult * gangupMult;
@@ -2539,7 +2672,7 @@ export class GameEngine {
       (this.player2?.archetypeId === 'speedster' ||
       (this.mode !== 'multi' && this.enemy.archetypes.includes('speedster'))
         ? 1.5
-        : 1.0) * (this.enemyCore.collapsed ? 1.3 : 1.0);
+        : 1.0) * (this.enemyCore.collapsed ? 1.25 : 1.0);
     // v2.3: offline, the enemy board uses the AI's archetypes (sniper
     // 1-2 cell launches, speedster refill); online/local 2P it uses P2's.
     // Royale has no opponent board on my screen: skip its update.
@@ -2676,17 +2809,9 @@ export class GameEngine {
           this.particleSystem,
           this.handleEnemyLaunch,
           () => {
-            // Boss Sniper Beam
-            this.projectileMgr.createSniperBeam(
-              'enemy',
-              this.enemy.currentCol,
-              this.renderer.enemyOriginX,
-              this.renderer.enemyOriginY,
-              this.renderer.cellW,
-              this.renderer.cellH,
-              this.renderer.gap
-            );
-            soundManager.playLaunch('red', 1, 'spear');
+            // v3.0: boss/AI sniper beam goes through the same 0.35s
+            // telegraph queue as the player's (fireDueBeams in update()).
+            this.enqueueBeam('enemy', this.enemy.currentCol);
           },
           { col: this.player.currentCol, row: this.player.currentRow }
         );
@@ -2700,6 +2825,9 @@ export class GameEngine {
     }
 
     // Projectiles & Particles update
+    // v3.0: beams whose 0.35s telegraph expired fire now, so they join
+    // this frame's projectile update.
+    this.fireDueBeams();
     const target2X = this.player2 ? this.player2.x : this.enemy.x;
     this.projectileMgr.update(dt, this.particleSystem, this.player.x, target2X);
     this.particleSystem.update(dt);
@@ -3339,7 +3467,7 @@ export class GameEngine {
           // Direct Hit on Target Hitbox
           const distToTarget = Math.hypot(cellCenterX - targetOpponent.x, cellCenterY - targetOpponent.y);
           if (distToTarget < targetOpponent.radius + cellW / 2) {
-            // v2.2: while the 0.15s consecutive-hit protection (or the
+            // v2.2: while the 0.18s consecutive-hit protection (or the
             // 0.3s collapse-push protection) is up, the cell passes through
             // with no hit resolution at all — no combo, no cell loss, no
             // floating text. (Dash evasion keeps its old consume behavior.)
@@ -3359,7 +3487,8 @@ export class GameEngine {
             }
 
             const mult = this.comboMultiplier;
-            // v2.2 anti-instant-kill: one direct hit deals at most 35.
+            // v2.2 anti-instant-kill: one direct hit deals at most 30
+            // (v3.0: was 35).
             const finalDmg = Math.min(MAX_SINGLE_HIT_DMG, Math.round(p.damagePerCell * mult));
             targetOpponent.takeDamage(finalDmg, true);
             this.stats.damageDealt += finalDmg;
@@ -3394,14 +3523,20 @@ export class GameEngine {
               18 + Math.min(10, this.comboCount * 1.2)
             );
 
-            if (p.color === 'yellow') {
+            // v3.0: a sniper 1-2 cell snipe applies no status effect —
+            // no yellow slow/contamination, no red tile destruction. The
+            // Piercing Beam is exempt (isBeam: it is a skill, and keeps
+            // its old behavior).
+            const appliesStatusEffect =
+              !(p.archetypeId === 'sniper' && p.cells.length <= 2 && !p.isBeam);
+            if (appliesStatusEffect && p.color === 'yellow') {
               targetOpponent.slowTimer = 2.0;
               // Deterministic contamination around the hit cell: the
               // defender applies the same change to the same logical
               // board (mirrored frame) on their side.
               this.enemyBoard.contaminateAt(targetOpponent.currentCol, targetOpponent.currentRow);
             }
-            if (p.color === 'red') {
+            if (appliesStatusEffect && p.color === 'red') {
               const opTile = this.enemyBoard.tiles[targetOpponent.currentRow]?.[targetOpponent.currentCol];
               if (opTile) {
                 opTile.color = null;
@@ -3411,16 +3546,23 @@ export class GameEngine {
             }
             if (p.shapeType === 'meteor' && !p.isMeteorExploding) {
               p.isMeteorExploding = true;
-              const meteorDmg = Math.min(MAX_SINGLE_HIT_DMG, Math.round(15 * mult));
+              // v3.0: the meteor AOE is table-based — the projectile's
+              // full table total (damagePerCell x cells) x the combo,
+              // capped at 30. (Was a fixed 15 x combo.)
+              const meteorDmg = Math.min(
+                MAX_SINGLE_HIT_DMG,
+                Math.round(p.damagePerCell * p.cells.length * mult)
+              );
               targetOpponent.takeDamage(meteorDmg, true);
               this.stats.damageDealt += meteorDmg;
               this.particleSystem.addShockwave(cellCenterX, cellCenterY, 160, '#FF5500');
               this.particleSystem.addFloatingText(targetOpponent.x, targetOpponent.y - 50, `METEOR -${meteorDmg} AOE!`, '#FF5500', 20);
             }
 
-            // v2.2: 0.15s consecutive-hit protection after a direct hit
-            // (never shortens a longer protection, e.g. the 0.3s push).
-            targetOpponent.invincibleTimer = Math.max(targetOpponent.invincibleTimer, 0.15);
+            // v3.0: 0.18s consecutive-hit protection after a direct hit
+            // (was 0.15s; never shortens a longer protection, e.g. the
+            // 0.3s push).
+            targetOpponent.invincibleTimer = Math.max(targetOpponent.invincibleTimer, 0.18);
 
             this.triggerStateUpdate();
           }
@@ -3429,6 +3571,11 @@ export class GameEngine {
         // 1b. Rear core hit: a cell that passed through the central 5
         // columns (3-7) and behind the enemy board strikes the core.
         // Combo and frontline bonuses apply; red/yellow status effects do not.
+        // v3.0 disruption lanes: a cell that passed the enemy board in a
+        // side lane (cols 0, 1, 7, 8) destroys the farthest active tile
+        // in that column instead of hitting the core (the cell is consumed
+        // either way). Arcade modes have their own impact rules, so the
+        // disruption lanes do not apply there.
         for (const cell of p.cells) {
           if (cell.destroyed) continue;
           const cellLeft = p.x + cell.relCol * (cellW + gap);
@@ -3436,6 +3583,19 @@ export class GameEngine {
           const cellCenterX = cellLeft + cellW / 2;
           const cellCenterY = cellTop + cellH / 2;
           const col = Math.floor((cellCenterX - this.renderer.enemyOriginX) / (cellW + gap));
+          if (!this.isArcade && cellCenterY < this.renderer.enemyOriginY && col >= 0 && col <= 8 && (col <= 1 || col >= 7)) {
+            if (this.enemyBoard.destroyBackTile(col, 'top')) {
+              cell.destroyed = true;
+              this.particleSystem.addFloatingText(
+                cellCenterX,
+                this.renderer.enemyOriginY - 10,
+                'DISRUPT!',
+                '#A78BFA',
+                15
+              );
+            }
+            continue;
+          }
           if (cellCenterY < this.renderer.enemyOriginY && col >= 2 && col <= 6) {
             // v2.2 balance: a sniper 1-2 cell snipe does not raise the
             // combo or refresh its timer (damage still applies).
@@ -3452,8 +3612,8 @@ export class GameEngine {
             const mult = this.comboMultiplier;
             // 90s+ core hits deal double damage.
             const coreMult = this.gameTime >= 90 ? 2 : 1;
-            // v2.2: sniper 1-2 cell projectiles deal 50% to the core.
-            // Hotfix (2026-11-21): one core hit deals at most 60.
+            // v3.0: sniper 1-2 cell projectiles deal 40% to the core
+            // (was 50%). One core hit deals at most 55 (was 60).
             const finalDmg = Math.min(
               MAX_CORE_HIT_DMG,
               Math.round(
@@ -3476,7 +3636,13 @@ export class GameEngine {
             );
             if (p.shapeType === 'meteor' && !p.isMeteorExploding) {
               p.isMeteorExploding = true;
-              const meteorDmg = Math.min(MAX_CORE_HIT_DMG, Math.round(15 * mult));
+              // v3.0: the meteor AOE is table-based — the projectile's
+              // full table total x the combo x the core multiplier,
+              // capped at 55. (Was a fixed 15 x combo.)
+              const meteorDmg = Math.min(
+                MAX_CORE_HIT_DMG,
+                Math.round(p.damagePerCell * p.cells.length * mult * coreMult)
+              );
               this.damageCore('enemy', meteorDmg);
               this.stats.damageDealt += meteorDmg;
               this.particleSystem.addShockwave(cellCenterX, cellCenterY, 160, '#FF5500');
@@ -3499,7 +3665,7 @@ export class GameEngine {
           // Direct Hit on My Hitbox
           const distToPlayer = Math.hypot(cellCenterX - this.player.x, cellCenterY - this.player.y);
           if (distToPlayer < this.player.radius + cellW / 2) {
-            // v2.2: while the 0.15s consecutive-hit protection (or the
+            // v2.2: while the 0.18s consecutive-hit protection (or the
             // 0.3s collapse-push protection) is up, the cell passes through
             // with no hit resolution at all.
             if (this.player.invincibleTimer > 0) continue;
@@ -3527,8 +3693,11 @@ export class GameEngine {
                 dmg = Math.round(p.damagePerCell * this.combo2Multiplier);
               }
             }
-            // v2.2 anti-instant-kill: one direct hit deals at most 35.
-            dmg = Math.min(MAX_SINGLE_HIT_DMG, dmg);
+            // v2.2 anti-instant-kill: one direct hit deals at most 30
+            // (v3.0: was 35). Round here: damagePerCell is a float share
+            // of the v3.0 table total, so an unrounded value would show
+            // as a fractional HP loss in single mode.
+            dmg = Math.min(MAX_SINGLE_HIT_DMG, Math.round(dmg));
             if (p.fromPlayerId) this.lastHitBy = p.fromPlayerId;
             this.player.takeDamage(dmg, true);
             this.stats.damageTaken += dmg;
@@ -3544,7 +3713,12 @@ export class GameEngine {
               networkManager.sendAction('hit', { newHp: this.player.hp, dmg });
             }
 
-            if (p.color === 'red') {
+            // v3.0: a sniper 1-2 cell snipe applies no status effect
+            // (no red tile destruction, no yellow slow/contamination).
+            // The Piercing Beam is exempt (isBeam: a skill, old behavior).
+            const appliesStatusEffect =
+              !(p.archetypeId === 'sniper' && p.cells.length <= 2 && !p.isBeam);
+            if (appliesStatusEffect && p.color === 'red') {
               const pTile = this.playerBoard.tiles[this.player.currentRow]?.[this.player.currentCol];
               if (pTile) {
                 pTile.color = null;
@@ -3552,16 +3726,23 @@ export class GameEngine {
                 pTile.cooldownMax = 1.3;
               }
             }
-            if (p.color === 'yellow') {
+            if (appliesStatusEffect && p.color === 'yellow') {
               this.player.slowTimer = 2.0;
               this.playerBoard.contaminateAt(this.player.currentCol, this.player.currentRow);
             }
-            // v2.2: 0.15s consecutive-hit protection after a direct hit.
-            this.player.invincibleTimer = Math.max(this.player.invincibleTimer, 0.15);
+            // v3.0: 0.18s consecutive-hit protection after a direct hit
+            // (was 0.15s).
+            this.player.invincibleTimer = Math.max(this.player.invincibleTimer, 0.18);
           }
         }
 
         // 2b. Rear core hit on my core (central 5 columns, behind my board).
+        // v3.0 disruption lanes: a cell that passed my board in a side
+        // lane (cols 0, 1, 7, 8) destroys the farthest active tile in
+        // that column instead of hitting my core. Arcade modes have their
+        // own impact rules, so the disruption lanes do not apply there
+        // (royale incoming projectiles use this same path, so they do
+        // disrupt).
         for (const cell of p.cells) {
           if (cell.destroyed) continue;
           const cellLeft = p.x + cell.relCol * (cellW + gap);
@@ -3570,6 +3751,19 @@ export class GameEngine {
           const cellCenterY = cellTop + cellH / 2;
           const col = Math.floor((cellCenterX - this.renderer.playerOriginX) / (cellW + gap));
           const boardBottom = this.renderer.playerOriginY + GRID_ROWS * (cellH + gap) - gap;
+          if (!this.isArcade && cellCenterY > boardBottom && col >= 0 && col <= 8 && (col <= 1 || col >= 7)) {
+            if (this.playerBoard.destroyBackTile(col, 'bottom')) {
+              cell.destroyed = true;
+              this.particleSystem.addFloatingText(
+                cellCenterX,
+                boardBottom + 10,
+                'DISRUPT!',
+                '#A78BFA',
+                15
+              );
+            }
+            continue;
+          }
           if (cellCenterY > boardBottom && col >= 2 && col <= 6) {
             let dmg = p.damagePerCell;
             if (this.mode === 'multi' || this.mode === 'royale') {
@@ -3590,8 +3784,8 @@ export class GameEngine {
               }
             }
             const coreMult = this.gameTime >= 90 ? 2 : 1;
-            // v2.2: sniper 1-2 cell projectiles deal 50% to the core.
-            // Hotfix (2026-11-21): one core hit deals at most 60.
+            // v3.0: sniper 1-2 cell projectiles deal 40% to the core
+            // (was 50%). One core hit deals at most 55 (was 60).
             const finalDmg = Math.min(
               MAX_CORE_HIT_DMG,
               Math.round(dmg * coreMult * sniperCoreDamageMult(p.archetypeId, p.cells.length))
@@ -3736,7 +3930,9 @@ export class GameEngine {
       this.mode === 'royale',
       this.royaleWarnings,
       cutin,
-      arcadeRender
+      arcadeRender,
+      // v3.0: sniper beam telegraphs (pending beams) for the red aim line.
+      this.beamPending
     );
 
     // v2.2 Phase 2: start-countdown overlay (3-2-1-FIGHT) above the canvas.

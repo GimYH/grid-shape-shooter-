@@ -1,4 +1,4 @@
-import { CampaignProgress, NoContinueRecord } from '../types/game';
+import { ArchetypeId, CampaignProgress, NoContinueRecord } from '../types/game';
 
 // v2.3 campaign progress: highest cleared stage + no-continue record.
 // Stored in localStorage under this key. When localStorage is unavailable
@@ -9,7 +9,12 @@ export const CAMPAIGN_STORAGE_KEY = 'gss_campaign_v1';
 let memoryStore: CampaignProgress | null = null;
 
 function cloneProgress(p: CampaignProgress): CampaignProgress {
-  return { maxCleared: p.maxCleared, noContinue: p.noContinue ? { ...p.noContinue } : null };
+  return {
+    maxCleared: p.maxCleared,
+    noContinue: p.noContinue ? { ...p.noContinue } : null,
+    lastStage: p.lastStage,
+    lastArchetype: p.lastArchetype,
+  };
 }
 
 export function loadCampaignProgress(): CampaignProgress {
@@ -22,6 +27,11 @@ export function loadCampaignProgress(): CampaignProgress {
         return {
           maxCleared: Math.max(0, Math.min(30, Math.floor(parsed.maxCleared))),
           noContinue: parsed.noContinue ?? null,
+          lastStage:
+            typeof parsed.lastStage === 'number'
+              ? Math.max(1, Math.min(30, Math.floor(parsed.lastStage)))
+              : undefined,
+          lastArchetype: typeof parsed.lastArchetype === 'string' ? parsed.lastArchetype : undefined,
         };
       }
     }
@@ -45,6 +55,16 @@ export function saveCampaignProgress(p: CampaignProgress): void {
 export function recordStageClear(stageId: number): CampaignProgress {
   const p = loadCampaignProgress();
   p.maxCleared = Math.max(p.maxCleared, Math.max(0, Math.min(30, stageId)));
+  saveCampaignProgress(p);
+  return p;
+}
+
+// v3.0 Phase 2: remember the last single-campaign deploy so the title
+// screen can offer a one-click quick entry (last stage + archetype).
+export function recordLastSingle(stageId: number, archetype: ArchetypeId): CampaignProgress {
+  const p = loadCampaignProgress();
+  p.lastStage = Math.max(1, Math.min(30, Math.floor(stageId)));
+  p.lastArchetype = archetype;
   saveCampaignProgress(p);
   return p;
 }
