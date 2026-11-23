@@ -1,5 +1,9 @@
 # Grid Shape Shooter — 수정본 노트 (2026-11-13)
 
+## Godot Spec 버튼 제거 (2026-11-24, 네린 지시)
+
+- 타이틀 화면의 "Godot 4.x / Steam Engine Specs" 버튼과 게임 중 슬림 바의 "Spec" 버튼(듀얼·로얄·아케이드 HUD 전부)을 제거했다. 모달(`GodotExportModal.tsx`) 파일 자체를 삭제하고, `App.tsx`의 상태·임포트·마운트와 4개 컴포넌트의 `onOpenGodotModal` prop 배선을 전부 정리했다. `src/` 안에 Godot 참조 0건 확인, tsc + 빌드 통과, 회귀 테스트 전부 통과(13개 파일 883건).
+
 원본 압축(`grid-shape-shooter_1_88m9.zip`)을 전수 확인하고, 실제로 확인된
 결함만 원본 인터페이스를 유지한 채 수정했다. 타입 검사·빌드·서버 프로토콜
 테스트를 전부 통과한 상태다.

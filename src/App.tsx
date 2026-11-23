@@ -11,7 +11,6 @@ import { StageClearModal } from './components/StageClearModal';
 import { StageSelectModal } from './components/StageSelectModal';
 import { CharacterSelectModal } from './components/CharacterSelectModal';
 import { OnlineRoomModal } from './components/OnlineRoomModal';
-import { GodotExportModal } from './components/GodotExportModal';
 import { OnscreenControls } from './components/OnscreenControls';
 import { MobileJoystickControls } from './components/MobileJoystickControls';
 import { ArchetypeId, GameMode } from './types/game';
@@ -28,7 +27,6 @@ export default function App() {
   const [gameStatus, setGameStatus] = useState<GameStatus>('title');
   const [selectedMode, setSelectedMode] = useState<GameMode>('single');
   const [stageNum, setStageNum] = useState<number>(1);
-  const [showGodotModal, setShowGodotModal] = useState<boolean>(false);
   const [showCharSelect, setShowCharSelect] = useState<boolean>(false);
   const [showStageSelect, setShowStageSelect] = useState<boolean>(false);
   const [showOnlineModal, setShowOnlineModal] = useState<boolean>(false);
@@ -386,7 +384,6 @@ export default function App() {
               setOnlineModalMode('royale');
               setShowOnlineModal(true);
             }}
-            onOpenGodotModal={() => setShowGodotModal(true)}
           />
         )}
 
@@ -422,14 +419,12 @@ export default function App() {
             {engineRef.current.mode === 'royale' ? (
               <RoyaleHUD
                 engine={engineRef.current}
-                onOpenGodotModal={() => setShowGodotModal(true)}
                 onRestart={handleRestart}
                 onReturnToTitle={handleReturnToTitle}
               />
             ) : engineRef.current.mode === 'arcade' ? (
               <ArcadeHUD
                 engine={engineRef.current}
-                onOpenGodotModal={() => setShowGodotModal(true)}
                 onTogglePause={handleTogglePause}
                 onRestart={handleRestart}
                 onReturnToTitle={handleReturnToTitle}
@@ -437,7 +432,6 @@ export default function App() {
             ) : (
               <GameHUD
                 engine={engineRef.current}
-                onOpenGodotModal={() => setShowGodotModal(true)}
                 onTogglePause={handleTogglePause}
                 onRestart={handleRestart}
                 onReturnToTitle={handleReturnToTitle}
@@ -581,11 +575,6 @@ export default function App() {
           />
         )}
 
-        {/* Commercial Architecture Godot 4.x / Steam Specs Modal */}
-        <GodotExportModal
-          isOpen={showGodotModal}
-          onClose={() => setShowGodotModal(false)}
-        />
       </div>
 
       {/* Mobile portrait joystick controls: rendered OUTSIDE the scaled

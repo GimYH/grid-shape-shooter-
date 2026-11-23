@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo } from 'react';
-import { Play, Sparkles, Swords, Zap, Code2, Crown, Users, Globe, Timer, Shield, Gamepad2 } from 'lucide-react';
+import { Play, Sparkles, Swords, Zap, Crown, Users, Globe, Timer, Shield, Gamepad2 } from 'lucide-react';
 import { GameMode, ArchetypeId } from '../types/game';
 import { ARCADE_MODE_META, ArcadeModeId, formatArcadeTime, loadArcadeRecords } from '../game/arcade';
 import { loadCampaignProgress } from '../game/campaign';
@@ -12,7 +12,6 @@ interface TitleScreenProps {
   onSelectArcade: (mode: ArcadeModeId) => void;
   onOpenOnlineModal: () => void;
   onOpenRoyaleModal: () => void;
-  onOpenGodotModal: () => void;
 }
 
 export const TitleScreen: React.FC<TitleScreenProps> = ({
@@ -21,7 +20,6 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   onSelectArcade,
   onOpenOnlineModal,
   onOpenRoyaleModal,
-  onOpenGodotModal,
 }) => {
   // v3.0 Phase 2: one-click quick entry — last single stage + archetype.
   const quick = useMemo(() => {
@@ -220,14 +218,6 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
             <span className="text-[11px] text-fuchsia-400 font-semibold mt-0.5">최대 8인 · 워프 포탈</span>
           </button>
         </div>
-
-        <button
-          onClick={onOpenGodotModal}
-          className="mb-5 px-4 py-1.5 rounded-full bg-slate-900/90 hover:bg-slate-800 border border-slate-700 hover:border-cyan-400/50 text-slate-300 font-semibold text-xs flex items-center gap-2 transition-all cursor-pointer"
-        >
-          <Code2 className="w-3.5 h-3.5 text-cyan-400" />
-          <span>Godot 4.x / Steam Engine Specs</span>
-        </button>
 
         {/* Arcade tab: 3 mini-games, standard craft only (no archetype pick) */}
         <div className="w-full max-w-4xl mb-6">

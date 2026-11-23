@@ -8,7 +8,6 @@ import {
   Zap,
   Volume2,
   VolumeX,
-  Code2,
   Pause,
   Play,
   RotateCcw,
@@ -26,7 +25,6 @@ import {
 
 interface ArcadeHUDProps {
   engine: GameEngine;
-  onOpenGodotModal: () => void;
   onTogglePause: () => void;
   onRestart: () => void;
   onReturnToTitle: () => void;
@@ -37,7 +35,6 @@ interface ArcadeHUDProps {
 // 상단 정보 + 지령/미션 배너, 우 420 = 현재 기록 + BEST 비교.
 export const ArcadeHUD: React.FC<ArcadeHUDProps> = ({
   engine,
-  onOpenGodotModal,
   onTogglePause,
   onRestart,
   onReturnToTitle,
@@ -302,15 +299,6 @@ export const ArcadeHUD: React.FC<ArcadeHUDProps> = ({
           className="p-1 hover:text-cyan-400 text-slate-300 transition-colors cursor-pointer"
         >
           <RotateCcw className="w-4 h-4" />
-        </button>
-
-        <div className="h-4 w-px bg-slate-700" />
-        <button
-          onClick={onOpenGodotModal}
-          className="flex items-center gap-1.5 text-xs font-semibold bg-cyan-600/30 hover:bg-cyan-500/40 text-cyan-300 border border-cyan-400/50 px-2 py-0.5 rounded-full transition-all hover:scale-105 cursor-pointer"
-        >
-          <Code2 className="w-3.5 h-3.5" />
-          <span>Spec</span>
         </button>
       </div>
 

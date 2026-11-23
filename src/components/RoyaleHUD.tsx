@@ -21,14 +21,12 @@ import {
   Zap,
   Wind,
   Trash2,
-  Code2,
 } from 'lucide-react';
 
 interface RoyaleHUDProps {
   engine: GameEngine;
   onReturnToTitle: () => void;
   onRestart: () => void;
-  onOpenGodotModal: () => void;
 }
 
 // GRID ROYALE (v2.4) HUD: same 1920x1080 three-column cockpit as the duel
@@ -39,7 +37,6 @@ export const RoyaleHUD: React.FC<RoyaleHUDProps> = ({
   engine,
   onReturnToTitle,
   onRestart,
-  onOpenGodotModal,
 }) => {
   const [muted, setMuted] = useState(soundManager.isMuted());
   const player = engine.player;
@@ -145,15 +142,6 @@ export const RoyaleHUD: React.FC<RoyaleHUDProps> = ({
           className="p-1 hover:text-fuchsia-400 text-slate-300 transition-colors cursor-pointer"
         >
           <RotateCcw className="w-4 h-4" />
-        </button>
-
-        <div className="h-4 w-px bg-slate-700" />
-        <button
-          onClick={onOpenGodotModal}
-          className="flex items-center gap-1.5 text-xs font-semibold bg-cyan-600/30 hover:bg-cyan-500/40 text-cyan-300 border border-cyan-400/50 px-2 py-0.5 rounded-full transition-all hover:scale-105 cursor-pointer"
-        >
-          <Code2 className="w-3.5 h-3.5" />
-          <span>Spec</span>
         </button>
       </div>
 
