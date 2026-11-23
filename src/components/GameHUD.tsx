@@ -9,7 +9,6 @@ import {
   Shield,
   Volume2,
   VolumeX,
-  Code2,
   Pause,
   Play,
   RotateCcw,
@@ -24,7 +23,6 @@ import {
 
 interface GameHUDProps {
   engine: GameEngine;
-  onOpenGodotModal: () => void;
   onTogglePause: () => void;
   onRestart: () => void;
   onReturnToTitle: () => void;
@@ -35,7 +33,6 @@ interface GameHUDProps {
 // center top = 56px slim bar with the shrink countdown.
 export const GameHUD: React.FC<GameHUDProps> = ({
   engine,
-  onOpenGodotModal,
   onTogglePause,
   onRestart,
   onReturnToTitle,
@@ -326,15 +323,6 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           className="p-1 hover:text-cyan-400 text-slate-300 transition-colors cursor-pointer"
         >
           <RotateCcw className="w-4 h-4" />
-        </button>
-
-        <div className="h-4 w-px bg-slate-700" />
-        <button
-          onClick={onOpenGodotModal}
-          className="flex items-center gap-1.5 text-xs font-semibold bg-cyan-600/30 hover:bg-cyan-500/40 text-cyan-300 border border-cyan-400/50 px-2 py-0.5 rounded-full transition-all hover:scale-105 cursor-pointer"
-        >
-          <Code2 className="w-3.5 h-3.5" />
-          <span>Spec</span>
         </button>
       </div>
 
